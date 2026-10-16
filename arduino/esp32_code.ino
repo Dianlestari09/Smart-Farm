@@ -21,8 +21,8 @@ const char* WIFI_SSID     = "SSID_WIFI_ANDA";
 const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
 
 // ─── Supabase Config ──────────────────────────────
-const char* SUPABASE_URL  = "https://XXXXXXXXXXXX.supabase.co";
-const char* SUPABASE_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."; // anon key
+const char* SUPABASE_URL  = "https://jkgqmshsjngppsibwwyf.supabase.co";
+const char* SUPABASE_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprZ3Ftc2hzam5ncHBzaWJ3d3lmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNjQ5MzMsImV4cCI6MjEwNzc0MDkzM30.XzjuidtnuIyf2eldLsm0CHHB_AL7OOoVdRbEMuOD48g";
 const char* DEVICE_ID     = "ESP32-01";
 
 // ─── Sensor Config ───────────────────────────────

@@ -8,15 +8,15 @@
  */
 
 window.SMARTFARM_CONFIG = {
-  // Ganti dengan URL Project Supabase Anda
-  SUPABASE_URL: '',
+  // URL Project Supabase
+  SUPABASE_URL: 'https://jkgqmshsjngppsibwwyf.supabase.co',
 
-  // Ganti dengan Anon / Public Key Supabase Anda
-  SUPABASE_ANON_KEY: '',
+  // Anon / Public Key Supabase
+  SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprZ3Ftc2hzam5ncHBzaWJ3d3lmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNjQ5MzMsImV4cCI6MjEwNzc0MDkzM30.XzjuidtnuIyf2eldLsm0CHHB_AL7OOoVdRbEMuOD48g',
 
   // Device ID yang didaftarkan di ESP32
   DEVICE_ID: 'ESP32-01',
 
-  // Mode awal: 'supabase' (bila URL sudah diisi) atau 'demo' (simulasi otomatis)
-  DEFAULT_MODE: 'demo'
+  // Mode awal: 'supabase'
+  DEFAULT_MODE: 'supabase'
 };

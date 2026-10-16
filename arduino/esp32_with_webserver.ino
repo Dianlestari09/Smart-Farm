@@ -39,8 +39,8 @@ const char* AP_SSID         = "SmartFarm-Kandang";
 const char* AP_PASS         = "12345678"; // minimal 8 karakter
 
 // ─── 2. KONFIGURASI SUPABASE (CLOUD) ──────────────────────────
-const char* SUPABASE_URL    = "https://XXXXXXXXXXXX.supabase.co";
-const char* SUPABASE_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."; // Anon Key
+const char* SUPABASE_URL    = "https://jkgqmshsjngppsibwwyf.supabase.co";
+const char* SUPABASE_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprZ3Ftc2hzam5ncHBzaWJ3d3lmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNjQ5MzMsImV4cCI6MjEwNzc0MDkzM30.XzjuidtnuIyf2eldLsm0CHHB_AL7OOoVdRbEMuOD48g";
 const char* DEVICE_ID       = "ESP32-01";
 
 // ─── 3. PIN SENSOR & AKTUATOR ─────────────────────────────────

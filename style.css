@@ -1107,6 +1107,60 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* ════════════════════════════════════════════════════════════════
+   LOG DATA SENSOR & DATE FILTER
+════════════════════════════════════════════════════════════════ */
+.log-filter-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-card);
+  margin-bottom: 24px;
+}
+
+.log-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.log-date-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.log-date-group input[type="date"] {
+  padding: 8px 12px;
+  background: var(--bg-card-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-main);
+  outline: none;
+}
+
+.log-date-group input[type="date"]:focus {
+  border-color: var(--primary);
+}
+
+.badge-condition {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 700;
+}
+.badge-condition.normal { background: var(--success-bg); color: var(--success); }
+.badge-condition.warning { background: var(--warning-bg); color: var(--warning); }
+.badge-condition.danger { background: var(--danger-bg); color: var(--danger); }
+
+/* ════════════════════════════════════════════════════════════════
    RESPONSIVE DESIGN (Smartphone & Tablet)
 ════════════════════════════════════════════════════════════════ */
 @media (max-width: 900px) {

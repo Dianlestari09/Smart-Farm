@@ -26,7 +26,10 @@
   const savedConfig = window.SMARTFARM_CONFIG || {};
   const storedUrl = localStorage.getItem('smartfarm_supabase_url') || savedConfig.SUPABASE_URL || '';
   const storedKey = localStorage.getItem('smartfarm_supabase_key') || savedConfig.SUPABASE_ANON_KEY || '';
-  const storedMode = localStorage.getItem('smartfarm_conn_mode') || (storedUrl ? 'supabase' : 'demo');
+  let storedMode = localStorage.getItem('smartfarm_conn_mode');
+  if (!storedMode || (storedMode === 'demo' && !localStorage.getItem('smartfarm_manual_demo') && storedUrl && storedKey)) {
+    storedMode = savedConfig.DEFAULT_MODE || 'supabase';
+  }
 
   // ─── STATE MANAGEMENT ─────────────────────────────────────────
   const state = {
@@ -64,6 +67,9 @@
     // Notifications
     notifications: [],
     unreadCount: 0,
+
+    // ESP32 Heartbeat tracking
+    lastEsp32Heartbeat: null,
 
     // Chart settings
     chartRange: '1h',
@@ -220,28 +226,40 @@
     if (!state.supabaseUrl || !state.supabaseKey) {
       console.warn('Supabase URL atau Key belum diisi, fallback ke Mode Demo.');
       state.connectionMode = 'demo';
-      setConnectionStatus(true, 'Mode Demo (Silakan atur Supabase di ⚙️)');
+      setConnectionStatus(true, 'Database: Mode Demo', 'Silakan atur Supabase di ⚙️');
       return false;
     }
 
     if (!window.supabase) {
       console.warn('Supabase SDK belum selesai dimuat dari CDN.');
+      setConnectionStatus(false, 'Database: SDK Error', 'CDN belum selesai dimuat');
       return false;
     }
 
     try {
       state.supabaseClient = window.supabase.createClient(state.supabaseUrl, state.supabaseKey);
 
-      // 1. Ambil pembacaan sensor terkini
-      const { data: latest, error: errLatest } = await state.supabaseClient
+      // 1. Ambil pembacaan sensor terkini untuk menguji koneksi database
+      const { data: latestRows, error: errLatest } = await state.supabaseClient
         .from('sensor_readings')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
 
-      if (!errLatest && latest) {
-        updateSensorData(latest.temperature, latest.humidity, latest.ammonia);
+      if (errLatest) {
+        console.error('Error koneksi Supabase:', errLatest);
+        setConnectionStatus(false, 'Database: Terputus', errLatest.message || 'Gagal query Supabase');
+        return false;
+      }
+
+      // Database berhasil terhubung!
+      setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Online)');
+
+      if (latestRows && latestRows.length > 0) {
+        const latest = latestRows[0];
+        updateSensorData(latest.temperature, latest.humidity, latest.ammonia, latest.created_at);
+      } else {
+        console.log('Tabel sensor_readings masih kosong. Menunggu data masuk dari ESP32...');
       }
 
       // 2. Ambil riwayat sensor 24 jam terakhir untuk grafik
@@ -264,14 +282,14 @@
       }
 
       // 3. Ambil status aktuator terkini
-      const { data: actData } = await state.supabaseClient
+      const { data: actRows } = await state.supabaseClient
         .from('actuator_status')
         .select('*')
         .order('updated_at', { ascending: false })
-        .limit(1)
-        .single();
+        .limit(1);
 
-      if (actData) {
+      if (actRows && actRows.length > 0) {
+        const actData = actRows[0];
         state.actuators.fanIntake = actData.fan_intake;
         state.actuators.fanExhaust = actData.fan_exhaust;
         state.actuators.heater = actData.heater;
@@ -280,7 +298,6 @@
       }
 
       // 4. Langganan Supabase Realtime WebSocket Channel
-      // Bersihkan channel lama jika ada
       state.supabaseChannels.forEach(ch => state.supabaseClient.removeChannel(ch));
       state.supabaseChannels = [];
 
@@ -289,14 +306,14 @@
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
           const row = payload.new;
           console.log('[Supabase Realtime] Sensor masuk:', row);
-          updateSensorData(row.temperature, row.humidity, row.ammonia);
-          setConnectionStatus(true, 'Supabase Realtime (Live)');
+          updateSensorData(row.temperature, row.humidity, row.ammonia, row.created_at);
+          setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
         })
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
-            setConnectionStatus(true, 'Supabase Realtime (Tersambung)');
-          } else if (status === 'CHANNEL_ERROR') {
-            setConnectionStatus(false, 'Supabase Error');
+            setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Realtime)');
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.warn('[Supabase Realtime] Status channel:', status);
           }
         });
 
@@ -317,7 +334,7 @@
       return true;
     } catch (err) {
       console.error('Inisialisasi Supabase gagal:', err);
-      setConnectionStatus(false, 'Gagal Konek Supabase');
+      setConnectionStatus(false, 'Database: Terputus', err.message || 'Koneksi Gagal');
       return false;
     }
   }
@@ -332,7 +349,7 @@
       if (!res.ok) throw new Error('ESP32 HTTP Error');
       const data = await res.json();
       
-      updateSensorData(data.temp, data.humid, data.ammonia);
+      updateSensorData(data.temp, data.humid, data.ammonia, new Date());
       setConnectionStatus(true, 'ESP32 Terhubung');
     } catch (err) {
       console.warn('Gagal koneksi ke ESP32:', err.message);
@@ -340,11 +357,19 @@
     }
   }
 
-  function updateSensorData(temp, humid, ammonia) {
+  function updateSensorData(temp, humid, ammonia, timestamp) {
     state.sensors.temperature = Number(temp);
     state.sensors.humidity = Number(humid);
     state.sensors.ammonia = Number(ammonia);
-    state.sensors.timestamp = new Date();
+    state.sensors.timestamp = timestamp ? new Date(timestamp) : new Date();
+
+    if (state.connectionMode === 'demo') {
+      state.lastEsp32Heartbeat = new Date();
+    } else if (timestamp) {
+      state.lastEsp32Heartbeat = new Date(timestamp);
+    }
+
+    evaluateEsp32Status();
 
     // Jalankan kalkulasi Fuzzy Mamdani
     state.fuzzy = computeFuzzyMamdani(temp, humid, ammonia);
@@ -399,13 +424,117 @@
     }
   }
 
-  function setConnectionStatus(online, text) {
+  function setConnectionStatus(online, text, subText) {
     const dot = document.getElementById('status-dot');
     const label = document.getElementById('status-text');
-    if (!dot || !label) return;
+    const dbDot = document.getElementById('db-status-dot');
+    const dbText = document.getElementById('db-status-text');
+    const dbSub = document.getElementById('db-status-sub');
 
-    dot.className = 'pulse-dot ' + (state.connectionMode === 'demo' ? 'demo' : online ? '' : 'offline');
-    label.textContent = text;
+    const isDemo = state.connectionMode === 'demo';
+    let dotClass = 'pulse-dot ';
+    if (isDemo) {
+      dotClass += 'demo';
+    } else if (online === null || online === undefined) {
+      dotClass += 'demo';
+    } else if (online) {
+      dotClass += '';
+    } else {
+      dotClass += 'offline';
+    }
+
+    if (dot && label) {
+      dot.className = dotClass;
+      label.textContent = text || (online ? 'Online' : 'Offline');
+    }
+
+    if (dbDot && dbText) {
+      dbDot.className = dotClass;
+      if (isDemo) {
+        dbText.textContent = text || 'Database: Mode Demo';
+        if (dbSub) dbSub.textContent = subText || 'Data Simulasi Lokal';
+      } else if (online === null || online === undefined) {
+        dbText.textContent = text || 'Database: Menghubungkan...';
+        if (dbSub) dbSub.textContent = subText || 'Supabase Cloud';
+      } else if (online) {
+        dbText.textContent = text || 'Database: Terhubung';
+        if (dbSub) dbSub.textContent = subText || 'Supabase Cloud (Live)';
+      } else {
+        dbText.textContent = text || 'Database: Terputus';
+        if (dbSub) dbSub.textContent = subText || 'Gagal Konek Supabase';
+      }
+    }
+
+    evaluateEsp32Status();
+  }
+
+  // Evaluasi koneksi mikrokontroler ESP32
+  function evaluateEsp32Status() {
+    const dot = document.getElementById('esp32-dot');
+    const text = document.getElementById('esp32-text');
+    const timeEl = document.getElementById('esp32-time');
+    const chipDot = document.getElementById('esp32-chip-dot');
+    const chipText = document.getElementById('esp32-chip-text');
+
+    if (!dot || !text) return;
+
+    if (state.connectionMode === 'demo') {
+      dot.className = 'pulse-dot demo';
+      text.textContent = 'ESP32: Mode Demo';
+      if (timeEl) timeEl.textContent = '(Simulasi)';
+      if (chipDot) chipDot.className = 'pulse-dot demo';
+      if (chipText) {
+        chipText.textContent = 'ESP32: Mode Simulasi Aktif';
+        chipText.style.color = 'var(--warning)';
+      }
+      return;
+    }
+
+    if (!state.lastEsp32Heartbeat) {
+      dot.className = 'pulse-dot offline';
+      text.textContent = 'ESP32: Belum Terhubung';
+      if (timeEl) timeEl.textContent = '(Menunggu alat...)';
+      if (chipDot) chipDot.className = 'pulse-dot offline';
+      if (chipText) {
+        chipText.textContent = 'ESP32: Belum Terhubung (Menunggu Data)';
+        chipText.style.color = 'var(--danger)';
+      }
+      return;
+    }
+
+    const diff = Math.max(0, Math.round((Date.now() - state.lastEsp32Heartbeat.getTime()) / 1000));
+
+    if (diff <= 15) {
+      // Data masuk secara normal (ESP32 mengirim tiap 3-5 detik)
+      dot.className = 'pulse-dot';
+      text.textContent = 'ESP32: Terhubung (Online)';
+      if (timeEl) timeEl.textContent = diff <= 1 ? '(Live)' : `(${diff}d lalu)`;
+      if (chipDot) chipDot.className = 'pulse-dot';
+      if (chipText) {
+        chipText.textContent = `ESP32: Terhubung / Online ${diff <= 1 ? '(Live)' : '(' + diff + 's lalu)'}`;
+        chipText.style.color = 'var(--success)';
+      }
+    } else if (diff <= 45) {
+      // Sedikit terlambat / sinyal wifi kandang lemah
+      dot.className = 'pulse-dot demo';
+      text.textContent = 'ESP32: Sinyal Lambat';
+      if (timeEl) timeEl.textContent = `(${diff}d lalu)`;
+      if (chipDot) chipDot.className = 'pulse-dot demo';
+      if (chipText) {
+        chipText.textContent = `ESP32: Sinyal Lambat (${diff}s lalu)`;
+        chipText.style.color = 'var(--warning)';
+      }
+    } else {
+      // Lebih dari 45 detik tidak ada telemetri baru -> Alat mati/terputus
+      dot.className = 'pulse-dot offline';
+      text.textContent = 'ESP32: Terputus (Offline)';
+      if (timeEl) timeEl.textContent = `(Mati sejak ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
+      if (chipDot) chipDot.className = 'pulse-dot offline';
+      if (chipText) {
+        chipText.textContent = `ESP32: Terputus / Offline (Terakhir ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
+        chipText.style.color = 'var(--danger)';
+      }
+    }
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -507,11 +636,6 @@
 
     if (dutyVal) dutyVal.textContent = `${dutyPct}%`;
     if (dutyFill) dutyFill.style.width = `${dutyPct}%`;
-
-    // Sinkron switch jika tidak sedang di-drag user
-    if (chk && !state.actuators.isManual) {
-      chk.checked = isOn;
-    }
   }
 
   function updateMembershipDisplay(mem) {
@@ -585,7 +709,7 @@
     const chartH = h - padTop - padBottom;
 
     const data = state.history;
-    if (data.length < 2) {
+    if (!data || data.length === 0) {
       ctx.fillStyle = '#8C90A0';
       ctx.font = '12px Inter';
       ctx.fillText('Menunggu data telemetri...', w / 2 - 60, h / 2);
@@ -612,6 +736,20 @@
     }
 
     function drawSeries(key, color, fillRgba) {
+      if (data.length === 1) {
+        const x = padLeft + chartW / 2;
+        const val = Math.min(maxY, Math.max(minY, data[0][key]));
+        const y = padTop + chartH - (val / maxY) * chartH;
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#FFF';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        return;
+      }
+
       ctx.beginPath();
       const points = [];
       for (let i = 0; i < data.length; i++) {
@@ -647,13 +785,15 @@
 
     drawSeries('humid', '#0284C7', 'rgba(2, 132, 199, 0.05)');
     drawSeries('temp', '#FF6B00', 'rgba(255, 107, 0, 0.08)');
-    drawSeries('ammonia', '#D97706', 'rgba(217, 119, 6, 0.05)');
+    drawSeries('ammonia', '#10B981', 'rgba(16, 185, 129, 0.08)');
 
     ctx.fillStyle = '#8C90A0';
     ctx.textAlign = 'left';
     ctx.fillText(data[0].time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), padLeft, h - 10);
-    ctx.textAlign = 'right';
-    ctx.fillText(data[data.length - 1].time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), w - padRight, h - 10);
+    if (data.length > 1) {
+      ctx.textAlign = 'right';
+      ctx.fillText(data[data.length - 1].time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), w - padRight, h - 10);
+    }
   }
 
   // ════════════════════════════════════════════════════════════════
@@ -682,65 +822,31 @@
       });
     });
 
-    // Actuator Manual Toggles
-    ['fan-in', 'fan-out', 'heater', 'conveyor'].forEach(id => {
-      const chk = document.getElementById(`chk-${id}`);
-      if (chk) {
-        chk.addEventListener('change', () => {
-          state.actuators.isManual = true;
-          const statusText = document.getElementById('actuator-mode-text');
-          if (statusText) statusText.textContent = 'Mode: Manual Override Aktif';
-          
-          if (id === 'fan-in') state.actuators.fanIntake = chk.checked;
-          if (id === 'fan-out') state.actuators.fanExhaust = chk.checked;
-          if (id === 'heater') state.actuators.heater = chk.checked;
-          if (id === 'conveyor') state.actuators.conveyor = chk.checked;
-
-          renderUI();
-
-          // Kirim command ke Supabase jika mode Supabase
-          if (state.connectionMode === 'supabase' && state.supabaseClient) {
-            state.supabaseClient
-              .from('actuator_status')
-              .update({
-                fan_intake: state.actuators.fanIntake,
-                fan_exhaust: state.actuators.fanExhaust,
-                heater: state.actuators.heater,
-                conveyor: state.actuators.conveyor,
-                updated_at: new Date().toISOString()
-              })
-              .eq('device_id', 'ESP32-01')
-              .then(() => console.log('[Supabase] Berhasil update status aktuator'))
-              .catch(e => console.warn('Gagal update aktuator ke Supabase:', e));
-          }
-
-          // Kirim command ke ESP32 jika mode lokal
-          if (state.connectionMode === 'esp32') {
-            fetch(`${state.esp32Ip}/api/actuator`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(state.actuators)
-            }).catch(e => console.warn('Gagal kirim perintah aktuator:', e));
-          }
-        });
-      }
-    });
-
-    // Reset to Auto button
-    const btnAuto = document.getElementById('btn-reset-auto');
-    if (btnAuto) {
-      btnAuto.addEventListener('click', () => {
-        state.actuators.isManual = false;
-        const statusText = document.getElementById('actuator-mode-text');
-        if (statusText) statusText.textContent = 'Mode: Otomatis (Fuzzy Mamdani)';
-        if (state.fuzzy) {
-          state.actuators.fanIntake = state.fuzzy.states.fanIntake;
-          state.actuators.fanExhaust = state.fuzzy.states.fanExhaust;
-          state.actuators.heater = state.fuzzy.states.heater;
-          state.actuators.conveyor = state.fuzzy.states.conveyor;
-        }
-        renderUI();
+    // Log sensor date filter listeners
+    const btnFilter = document.getElementById('btn-filter-logs');
+    if (btnFilter) {
+      btnFilter.addEventListener('click', () => {
+        const s = document.getElementById('log-date-start')?.value;
+        const e = document.getElementById('log-date-end')?.value;
+        fetchSensorLogs(s, e);
       });
+    }
+
+    const btnResetLogs = document.getElementById('btn-reset-logs');
+    if (btnResetLogs) {
+      btnResetLogs.addEventListener('click', () => {
+        const today = new Date().toISOString().slice(0, 10);
+        const inputS = document.getElementById('log-date-start');
+        const inputE = document.getElementById('log-date-end');
+        if (inputS) inputS.value = today;
+        if (inputE) inputE.value = today;
+        fetchSensorLogs(today, today);
+      });
+    }
+
+    const btnExport = document.getElementById('btn-export-logs');
+    if (btnExport) {
+      btnExport.addEventListener('click', exportLogsToCSV);
     }
 
     // Fuzzy Mamdani Live Simulator Sliders
@@ -812,6 +918,12 @@
         localStorage.setItem('smartfarm_supabase_key', state.supabaseKey);
         localStorage.setItem('smartfarm_esp32_ip', state.esp32Ip);
 
+        if (state.connectionMode === 'demo') {
+          localStorage.setItem('smartfarm_manual_demo', 'true');
+        } else {
+          localStorage.removeItem('smartfarm_manual_demo');
+        }
+
         restartPolling();
         modal.classList.remove('open');
       });
@@ -858,6 +970,133 @@
     });
   }
 
+  // ════════════════════════════════════════════════════════════════
+  // 5. LOG DATA SENSOR & DATE FILTER (DATABASE SUPABASE)
+  // ════════════════════════════════════════════════════════════════
+
+  let currentLogs = [];
+
+  async function fetchSensorLogs(startDate, endDate) {
+    const tbody = document.getElementById('log-table-body');
+    const badge = document.getElementById('log-count-badge');
+    if (!tbody) return;
+
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">Sedang mengambil data dari Supabase...</td></tr>';
+
+    try {
+      if (state.connectionMode === 'supabase' && state.supabaseClient) {
+        let query = state.supabaseClient
+          .from('sensor_readings')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (startDate) {
+          query = query.gte('created_at', `${startDate}T00:00:00.000Z`);
+        }
+        if (endDate) {
+          query = query.lte('created_at', `${endDate}T23:59:59.999Z`);
+        }
+
+        query = query.limit(200);
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        currentLogs = data || [];
+      } else {
+        // Mode Demo / Simulasi: Ambil dari state.history
+        currentLogs = state.history.map((h, idx) => ({
+          id: idx + 1,
+          created_at: h.time.toISOString(),
+          temperature: h.temp,
+          humidity: h.humid,
+          ammonia: h.ammonia,
+          device_id: 'ESP32-01'
+        })).reverse();
+      }
+
+      renderLogsTable(currentLogs);
+    } catch (err) {
+      console.error('Gagal mengambil log sensor:', err);
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--danger);">Gagal memuat log: ${err.message}</td></tr>`;
+      if (badge) badge.textContent = 'Error';
+    }
+  }
+
+  function renderLogsTable(logs) {
+    const tbody = document.getElementById('log-table-body');
+    const badge = document.getElementById('log-count-badge');
+    if (!tbody) return;
+
+    if (!logs || logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">Tidak ada data sensor pada rentang tanggal yang dipilih.</td></tr>';
+      if (badge) badge.textContent = '0 Data';
+      return;
+    }
+
+    if (badge) badge.textContent = `${logs.length} Data`;
+
+    tbody.innerHTML = logs.map((item, index) => {
+      const dt = new Date(item.created_at);
+      const timeStr = dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' + 
+                      dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+      const t = Number(item.temperature);
+      const h = Number(item.humidity);
+      const a = Number(item.ammonia);
+
+      // Evaluasi status kondisi mikroklimat
+      let condText = 'Normal';
+      let condClass = 'normal';
+      if (a >= THRESHOLDS.ammonia.danger || t >= THRESHOLDS.temperature.danger) {
+        condText = 'Kritis / Bahaya';
+        condClass = 'danger';
+      } else if (a >= THRESHOLDS.ammonia.warning || t >= THRESHOLDS.temperature.warning || h >= THRESHOLDS.humidity.danger) {
+        condText = 'Waspada';
+        condClass = 'warning';
+      }
+
+      return `
+        <tr>
+          <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">${index + 1}</td>
+          <td style="font-family:var(--font-mono);font-size:11px;font-weight:600;">${timeStr}</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:#FF6B00;">${t.toFixed(1)} °C</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:#0284C7;">${h.toFixed(1)} %</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:#10B981;">${a.toFixed(1)} ppm</td>
+          <td><span class="badge-condition ${condClass}">${condText}</span></td>
+          <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">${item.device_id || 'ESP32-01'}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function exportLogsToCSV() {
+    if (!currentLogs || currentLogs.length === 0) {
+      alert('Tidak ada data log untuk diunduh.');
+      return;
+    }
+
+    let csv = 'No,Waktu,Suhu_C,Kelembapan_Persen,Amonia_PPM,Status,Device_ID\r\n';
+    currentLogs.forEach((item, idx) => {
+      const dt = new Date(item.created_at).toLocaleString('id-ID');
+      const t = Number(item.temperature).toFixed(1);
+      const h = Number(item.humidity).toFixed(1);
+      const a = Number(item.ammonia).toFixed(1);
+      const dev = item.device_id || 'ESP32-01';
+      csv += `${idx + 1},"${dt}",${t},${h},${a},"${t > 30 ? 'Panas' : 'Normal'}",${dev}\r\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `log-sensor-kandang-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function switchView(viewName) {
     state.currentView = viewName;
 
@@ -873,6 +1112,13 @@
 
     if (viewName === 'history') {
       setTimeout(renderCanvasChart, 50);
+    } else if (viewName === 'logs') {
+      const inputS = document.getElementById('log-date-start');
+      const inputE = document.getElementById('log-date-end');
+      const today = new Date().toISOString().slice(0, 10);
+      if (inputS && !inputS.value) inputS.value = today;
+      if (inputE && !inputE.value) inputE.value = today;
+      fetchSensorLogs(inputS ? inputS.value : '', inputE ? inputE.value : '');
     }
   }
 
@@ -880,19 +1126,42 @@
     if (state.timerId) clearInterval(state.timerId);
 
     if (state.connectionMode === 'supabase') {
-      setConnectionStatus(false, 'Menghubungkan ke Supabase...');
+      setConnectionStatus(null, 'Database: Menghubungkan...', 'Memeriksa Supabase...');
       initSupabaseClient().then(success => {
         if (!success) {
           state.timerId = setInterval(tickDemoData, 3000);
           tickDemoData();
+        } else {
+          // Polling sinkronisasi database berkala setiap 5 detik
+          state.timerId = setInterval(async () => {
+            if (state.connectionMode === 'supabase' && state.supabaseClient) {
+              try {
+                const { data, error } = await state.supabaseClient
+                  .from('sensor_readings')
+                  .select('*')
+                  .order('created_at', { ascending: false })
+                  .limit(1);
+                if (!error && data && data.length > 0) {
+                  const r = data[0];
+                  const rowTime = new Date(r.created_at);
+                  if (!state.sensors.timestamp || rowTime > state.sensors.timestamp) {
+                    updateSensorData(r.temperature, r.humidity, r.ammonia, r.created_at);
+                  }
+                  setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live)');
+                }
+              } catch (e) {
+                console.warn('Sync periodic check error:', e);
+              }
+            }
+          }, 5000);
         }
       });
     } else if (state.connectionMode === 'esp32') {
-      setConnectionStatus(false, 'Menghubungkan ke ESP32...');
+      setConnectionStatus(null, 'ESP32: Menghubungkan...', 'Direct IP');
       pollEsp32Data();
       state.timerId = setInterval(pollEsp32Data, 3000);
     } else {
-      setConnectionStatus(true, 'Mode Simulasi (Demo)');
+      setConnectionStatus(true, 'Database: Mode Demo', 'Data Simulasi Lokal');
       state.timerId = setInterval(tickDemoData, 3000);
       tickDemoData();
     }
@@ -908,6 +1177,9 @@
     // Inisialisasi awal
     tickDemoData();
     restartPolling();
+
+    // Timer watchdog status koneksi ESP32 tiap 1 detik
+    setInterval(evaluateEsp32Status, 1000);
 
     const simTemp = document.getElementById('sim-temp');
     if (simTemp) {

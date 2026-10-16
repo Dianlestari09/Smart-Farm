@@ -32,12 +32,6 @@
     </div>
 
     <div class="header-actions">
-      <!-- Status Badge -->
-      <div class="status-badge" id="status-badge-container" title="Status koneksi telemetri">
-        <span class="pulse-dot demo" id="status-dot"></span>
-        <span id="status-text">Memuat status...</span>
-      </div>
-
       <!-- Clock -->
       <div class="header-clock" id="header-clock">--:--:--</div>
 
@@ -82,6 +76,12 @@
             </a>
           </li>
           <li>
+            <a class="nav-link" data-view="logs">
+              <span class="nav-icon">📋</span>
+              <span>Log Sensor</span>
+            </a>
+          </li>
+          <li>
             <a class="nav-link" data-view="info">
               <span class="nav-icon">◉</span>
               <span>Info Sistem & Skripsi</span>
@@ -90,15 +90,35 @@
         </ul>
       </div>
 
-      <div class="sidebar-footer">
-        <div class="sidebar-footer-title">Platform Stack</div>
-        <div class="tag-list">
-          <span class="tag">Supabase</span>
-          <span class="tag">Vercel</span>
-          <span class="tag">ESP32</span>
-          <span class="tag">SHT31</span>
-          <span class="tag">MQ-137</span>
+      <!-- Status Hub di Kiri Bawah Sidebar: Database & ESP32 -->
+      <div class="sidebar-footer" id="sidebar-status-container" style="padding:14px;background:var(--bg-card-subtle);border-radius:var(--radius);border:1px solid var(--border);margin-top:auto;display:flex;flex-direction:column;gap:12px;">
+        
+        <!-- 1. Status Database Supabase (Diatas Status ESP32) -->
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">Status Database</div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="pulse-dot demo" id="db-status-dot" style="flex-shrink:0;"></span>
+            <div style="display:flex;flex-direction:column;line-height:1.2;">
+              <span id="db-status-text" style="font-weight:700;font-size:12px;color:var(--text-main);">Database: Memeriksa...</span>
+              <span id="db-status-sub" style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;">Supabase Cloud</span>
+            </div>
+          </div>
         </div>
+
+        <div style="height:1px;background:var(--border);"></div>
+
+        <!-- 2. Status Hardware ESP32 -->
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">Status Hardware ESP32</div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="pulse-dot offline" id="esp32-dot" style="flex-shrink:0;"></span>
+            <div style="display:flex;flex-direction:column;line-height:1.2;">
+              <span id="esp32-text" style="font-weight:700;font-size:12px;color:var(--text-main);">ESP32: Memeriksa...</span>
+              <span id="esp32-time" style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;"></span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </aside>
 
@@ -119,12 +139,15 @@
           </div>
         </div>
 
-        <!-- Sensor Grid -->
         <div class="section-headline">
           <span class="section-icon">📡</span>
           <h2 class="section-title">Sensor Kandang</h2>
           <span class="section-sub">SHT31 · MQ-137</span>
           <div class="section-divider"></div>
+          <div id="esp32-live-chip" style="display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:11px;font-weight:700;background:var(--bg-card);border:1px solid var(--border);box-shadow:var(--shadow-sm);">
+            <span class="pulse-dot offline" id="esp32-chip-dot" style="width:7px;height:7px;"></span>
+            <span id="esp32-chip-text" style="color:var(--text-secondary);">ESP32: Belum Terhubung</span>
+          </div>
         </div>
 
         <div class="sensor-grid">
@@ -204,15 +227,15 @@
           </div>
         </div>
 
-        <!-- Aktuator Grid -->
+        <!-- Aktuator Grid (Monitoring Otomatis Saja) -->
         <div class="section-headline">
           <span class="section-icon">⚙️</span>
-          <h2 class="section-title">Status & Kontrol Aktuator</h2>
-          <span class="section-sub" id="actuator-mode-text">Mode: Otomatis (Fuzzy Mamdani)</span>
+          <h2 class="section-title">Status Aktuator</h2>
+          <span class="section-sub">Monitoring Otomatis (Keputusan FLC Mamdani)</span>
           <div class="section-divider"></div>
-          <button id="btn-reset-auto" style="padding:4px 12px;font-size:11px;font-weight:600;border-radius:20px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer;color:var(--primary);">
-            ↺ Set Otomatis
-          </button>
+          <span style="font-size:11px;font-weight:600;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border);padding:4px 12px;border-radius:20px;">
+            🔒 Mode Monitoring Saja
+          </span>
         </div>
 
         <div class="actuator-grid">
@@ -237,12 +260,9 @@
                 <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 0%;"></div>
               </div>
             </div>
-            <div class="switch-row">
-              <span>Manual Override</span>
-              <label class="toggle-switch">
-                <input type="checkbox" id="chk-fan-in">
-                <span class="slider-switch"></span>
-              </label>
+            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+              <span>Sistem Kontrol:</span>
+              <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
           </div>
 
@@ -267,12 +287,9 @@
                 <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 0%;"></div>
               </div>
             </div>
-            <div class="switch-row">
-              <span>Manual Override</span>
-              <label class="toggle-switch">
-                <input type="checkbox" id="chk-fan-out">
-                <span class="slider-switch"></span>
-              </label>
+            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+              <span>Sistem Kontrol:</span>
+              <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
           </div>
 
@@ -297,12 +314,9 @@
                 <div class="actuator-duty-fill" id="duty-fill-heater" style="width: 0%;"></div>
               </div>
             </div>
-            <div class="switch-row">
-              <span>Manual Override</span>
-              <label class="toggle-switch">
-                <input type="checkbox" id="chk-heater">
-                <span class="slider-switch"></span>
-              </label>
+            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+              <span>Sistem Kontrol:</span>
+              <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
           </div>
 
@@ -327,12 +341,9 @@
                 <div class="actuator-duty-fill" id="duty-fill-conveyor" style="width: 0%;"></div>
               </div>
             </div>
-            <div class="switch-row">
-              <span>Manual Override</span>
-              <label class="toggle-switch">
-                <input type="checkbox" id="chk-conveyor">
-                <span class="slider-switch"></span>
-              </label>
+            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+              <span>Sistem Kontrol:</span>
+              <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
           </div>
         </div>
@@ -531,8 +542,8 @@
               <span style="color:#0284C7;display:flex;align-items:center;gap:6px;">
                 <span style="width:10px;height:10px;background:#0284C7;border-radius:2px;display:inline-block;"></span> Kelembapan (%)
               </span>
-              <span style="color:#D97706;display:flex;align-items:center;gap:6px;">
-                <span style="width:10px;height:10px;background:#D97706;border-radius:2px;display:inline-block;"></span> Gas Amonia (ppm)
+              <span style="color:#10B981;display:flex;align-items:center;gap:6px;">
+                <span style="width:10px;height:10px;background:#10B981;border-radius:2px;display:inline-block;"></span> Gas Amonia (ppm)
               </span>
             </div>
 
@@ -550,7 +561,77 @@
       </section>
 
       <!-- ────────────────────────────────────────────────────────────
-           VIEW 4: INFO SISTEM & SKRIPSI
+           VIEW 4: LOG DATA SENSOR (DATABASE SUPABASE)
+      ──────────────────────────────────────────────────────────── -->
+      <section class="view-section" id="view-logs">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title-main">📋 Log Pembacaan Sensor</h1>
+            <p class="view-title-desc">Riwayat catatan telemetri kandang yang tersimpan di database Supabase</p>
+          </div>
+        </div>
+
+        <!-- Filter Card -->
+        <div class="log-filter-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:13px;font-weight:700;color:var(--text-main);display:flex;align-items:center;gap:6px;">
+              <span>🗓️ Filter Berdasarkan Tanggal:</span>
+            </div>
+            <span id="log-count-badge" style="font-family:var(--font-mono);font-size:12px;color:var(--primary);font-weight:700;background:var(--primary-glow-sm);padding:4px 10px;border-radius:20px;">
+              Memuat data...
+            </span>
+          </div>
+
+          <div class="log-filter-row">
+            <div class="log-date-group">
+              <label for="log-date-start">Dari:</label>
+              <input type="date" id="log-date-start">
+            </div>
+            <div class="log-date-group">
+              <label for="log-date-end">Sampai:</label>
+              <input type="date" id="log-date-end">
+            </div>
+            <button class="btn-primary" id="btn-filter-logs" style="width:auto;padding:8px 18px;font-size:12px;">
+              🔍 Terapkan Filter
+            </button>
+            <button class="chart-btn" id="btn-reset-logs" style="border:1px solid var(--border);padding:8px 14px;background:var(--bg-card);color:var(--text-secondary);font-size:12px;">
+              ↺ Hari Ini
+            </button>
+            <button class="chart-btn" id="btn-export-logs" style="border:1px solid var(--primary);color:var(--primary);background:var(--primary-glow-sm);padding:8px 14px;font-weight:700;font-size:12px;margin-left:auto;">
+              📥 Unduh CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Log Table Card -->
+        <div class="fuzzy-overview-card" style="padding:18px;">
+          <div class="rules-table-container">
+            <table class="rules-table">
+              <thead>
+                <tr>
+                  <th style="width:50px;">No</th>
+                  <th>Waktu Pengambilan</th>
+                  <th>Suhu Udara</th>
+                  <th>Kelembapan</th>
+                  <th>Gas Amonia (NH₃)</th>
+                  <th>Status Mikroklimat</th>
+                  <th>Device ID</th>
+                </tr>
+              </thead>
+              <tbody id="log-table-body">
+                <tr>
+                  <td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">
+                    Memuat log dari Supabase...
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ────────────────────────────────────────────────────────────
+           VIEW 5: INFO SISTEM & SKRIPSI
       ──────────────────────────────────────────────────────────── -->
       <section class="view-section" id="view-info">
         <div class="view-header">
@@ -669,6 +750,10 @@
     <a class="nav-link" data-view="history" style="flex-direction:column;font-size:10px;padding:6px;">
       <span style="font-size:18px;">◫</span>
       <span>Riwayat</span>
+    </a>
+    <a class="nav-link" data-view="logs" style="flex-direction:column;font-size:10px;padding:6px;">
+      <span style="font-size:18px;">📋</span>
+      <span>Log</span>
     </a>
     <a class="nav-link" data-view="info" style="flex-direction:column;font-size:10px;padding:6px;">
       <span style="font-size:18px;">◉</span>
