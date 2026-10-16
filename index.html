@@ -1,22 +1,27 @@
 <!DOCTYPE html>
 <html lang="id">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SmartFarm Poultry — Monitor Kandang Ayam Native</title>
-  <meta name="description" content="Dashboard Monitoring Kandang Ayam Pintar Real-Time Native Vanilla HTML/CSS/JS untuk Supabase & Vercel">
-  
+  <meta name="description"
+    content="Dashboard Monitoring Kandang Ayam Pintar Real-Time Native Vanilla HTML/CSS/JS untuk Supabase & Vercel">
+
   <!-- Google Fonts Inter & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap"
+    rel="stylesheet">
+
   <!-- Stylesheet Native -->
   <link rel="stylesheet" href="style.css">
 
   <!-- Supabase Official JS SDK CDN (Mendukung Realtime WebSocket) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
+
 <body>
 
   <!-- ══════════════════════════════════════════════════════════════
@@ -91,16 +96,22 @@
       </div>
 
       <!-- Status Hub di Kiri Bawah Sidebar: Database & ESP32 -->
-      <div class="sidebar-footer" id="sidebar-status-container" style="padding:14px;background:var(--bg-card-subtle);border-radius:var(--radius);border:1px solid var(--border);margin-top:auto;display:flex;flex-direction:column;gap:12px;">
-        
+      <div class="sidebar-footer" id="sidebar-status-container"
+        style="padding:14px;background:var(--bg-card-subtle);border-radius:var(--radius);border:1px solid var(--border);margin-top:auto;display:flex;flex-direction:column;gap:12px;">
+
         <!-- 1. Status Database Supabase (Diatas Status ESP32) -->
         <div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">Status Database</div>
+          <div
+            style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">
+            Status Database</div>
           <div style="display:flex;align-items:center;gap:10px;">
             <span class="pulse-dot demo" id="db-status-dot" style="flex-shrink:0;"></span>
             <div style="display:flex;flex-direction:column;line-height:1.2;">
-              <span id="db-status-text" style="font-weight:700;font-size:12px;color:var(--text-main);">Database: Memeriksa...</span>
-              <span id="db-status-sub" style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;">Supabase Cloud</span>
+              <span id="db-status-text" style="font-weight:700;font-size:12px;color:var(--text-main);">Database:
+                Memeriksa...</span>
+              <span id="db-status-sub"
+                style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;">Supabase
+                Cloud</span>
             </div>
           </div>
         </div>
@@ -109,12 +120,16 @@
 
         <!-- 2. Status Hardware ESP32 -->
         <div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">Status Hardware ESP32</div>
+          <div
+            style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">
+            Status Hardware ESP32</div>
           <div style="display:flex;align-items:center;gap:10px;">
             <span class="pulse-dot offline" id="esp32-dot" style="flex-shrink:0;"></span>
             <div style="display:flex;flex-direction:column;line-height:1.2;">
-              <span id="esp32-text" style="font-weight:700;font-size:12px;color:var(--text-main);">ESP32: Memeriksa...</span>
-              <span id="esp32-time" style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;"></span>
+              <span id="esp32-text" style="font-weight:700;font-size:12px;color:var(--text-main);">ESP32:
+                Memeriksa...</span>
+              <span id="esp32-time"
+                style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px;"></span>
             </div>
           </div>
         </div>
@@ -144,7 +159,8 @@
           <h2 class="section-title">Sensor Kandang</h2>
           <span class="section-sub">SHT31 · MQ-137</span>
           <div class="section-divider"></div>
-          <div id="esp32-live-chip" style="display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:11px;font-weight:700;background:var(--bg-card);border:1px solid var(--border);box-shadow:var(--shadow-sm);">
+          <div id="esp32-live-chip"
+            style="display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:11px;font-weight:700;background:var(--bg-card);border:1px solid var(--border);box-shadow:var(--shadow-sm);">
             <span class="pulse-dot offline" id="esp32-chip-dot" style="width:7px;height:7px;"></span>
             <span id="esp32-chip-text" style="color:var(--text-secondary);">ESP32: Belum Terhubung</span>
           </div>
@@ -233,7 +249,8 @@
           <h2 class="section-title">Status Aktuator</h2>
           <span class="section-sub">Monitoring Otomatis (Keputusan FLC Mamdani)</span>
           <div class="section-divider"></div>
-          <span style="font-size:11px;font-weight:600;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border);padding:4px 12px;border-radius:20px;">
+          <span
+            style="font-size:11px;font-weight:600;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border);padding:4px 12px;border-radius:20px;">
             🔒 Mode Monitoring Saja
           </span>
         </div>
@@ -260,7 +277,8 @@
                 <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 0%;"></div>
               </div>
             </div>
-            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+            <div
+              style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
               <span>Sistem Kontrol:</span>
               <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
@@ -287,7 +305,8 @@
                 <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 0%;"></div>
               </div>
             </div>
-            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+            <div
+              style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
               <span>Sistem Kontrol:</span>
               <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
@@ -314,7 +333,8 @@
                 <div class="actuator-duty-fill" id="duty-fill-heater" style="width: 0%;"></div>
               </div>
             </div>
-            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+            <div
+              style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
               <span>Sistem Kontrol:</span>
               <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
@@ -341,27 +361,12 @@
                 <div class="actuator-duty-fill" id="duty-fill-conveyor" style="width: 0%;"></div>
               </div>
             </div>
-            <div style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
+            <div
+              style="margin-top:12px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;border-top:1px dashed var(--border);padding-top:10px;">
               <span>Sistem Kontrol:</span>
               <span style="font-weight:600;color:var(--text-secondary);">Otomatis Fuzzy</span>
             </div>
           </div>
-        </div>
-
-        <!-- Ringkasan Fuzzy Card di Dashboard -->
-        <div class="fuzzy-overview-card">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span style="font-size:20px;">🧠</span>
-              <span style="font-size:15px;font-weight:700;">Ringkasan Fuzzy Mamdani (27 Rule Base)</span>
-            </div>
-            <button class="nav-link" data-view="fuzzy" style="display:inline-flex;padding:5px 12px;font-size:11px;background:var(--primary-glow-sm);color:var(--primary);border-radius:20px;font-weight:700;">
-              Buka Detail FLC →
-            </button>
-          </div>
-          <p style="font-size:12px;color:var(--text-secondary);line-height:1.6;">
-            Logika Fuzzy Controller Mamdani menghitung derajat keanggotaan 3 parameter (Suhu, Kelembapan, dan Gas Amonia) untuk menentukan tindakan otomatis 4 perangkat aktuator kandang.
-          </p>
         </div>
       </section>
 
@@ -379,7 +384,8 @@
         <!-- Live Simulator Sliders -->
         <div class="fuzzy-simulator-box">
           <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:14px;font-weight:700;color:var(--text-main);">🎛️ Simulator Nilai Input Sensor (Uji Coba Sidang Skripsi)</span>
+            <span style="font-size:14px;font-weight:700;color:var(--text-main);">🎛️ Simulator Nilai Input Sensor (Uji
+              Coba Sidang Skripsi)</span>
             <span style="font-size:11px;color:var(--text-muted);">Geser slider untuk menguji respon 27 aturan</span>
           </div>
           <div class="sim-slider-row">
@@ -411,7 +417,8 @@
             </div>
           </div>
 
-          <div id="sim-output-text" style="margin-top:14px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);font-family:var(--font-mono);">
+          <div id="sim-output-text"
+            style="margin-top:14px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);font-family:var(--font-mono);">
             Menghitung output...
           </div>
         </div>
@@ -432,17 +439,23 @@
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Dingin</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-dingin" style="width:0%;background:#38BDF8;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-temp-dingin" style="width:0%;background:#38BDF8;"></div>
+              </div>
               <span class="m-bar-val" id="m-temp-dingin-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Normal</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-normal" style="width:0%;background:#16A34A;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-temp-normal" style="width:0%;background:#16A34A;"></div>
+              </div>
               <span class="m-bar-val" id="m-temp-normal-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Panas</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-panas" style="width:0%;background:#DC2626;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-temp-panas" style="width:0%;background:#DC2626;"></div>
+              </div>
               <span class="m-bar-val" id="m-temp-panas-val">0.00</span>
             </div>
           </div>
@@ -455,17 +468,23 @@
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Kering</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-kering" style="width:0%;background:#D97706;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-hum-kering" style="width:0%;background:#D97706;"></div>
+              </div>
               <span class="m-bar-val" id="m-hum-kering-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Normal</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-normal" style="width:0%;background:#16A34A;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-hum-normal" style="width:0%;background:#16A34A;"></div>
+              </div>
               <span class="m-bar-val" id="m-hum-normal-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Basah</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-basah" style="width:0%;background:#0284C7;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-hum-basah" style="width:0%;background:#0284C7;"></div>
+              </div>
               <span class="m-bar-val" id="m-hum-basah-val">0.00</span>
             </div>
           </div>
@@ -478,17 +497,23 @@
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Aman</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-aman" style="width:0%;background:#16A34A;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-nh3-aman" style="width:0%;background:#16A34A;"></div>
+              </div>
               <span class="m-bar-val" id="m-nh3-aman-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Waspada</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-waspada" style="width:0%;background:#D97706;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-nh3-waspada" style="width:0%;background:#D97706;"></div>
+              </div>
               <span class="m-bar-val" id="m-nh3-waspada-val">0.00</span>
             </div>
             <div class="m-bar-row">
               <span class="m-bar-name">Bahaya</span>
-              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-bahaya" style="width:0%;background:#DC2626;"></div></div>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-nh3-bahaya" style="width:0%;background:#DC2626;"></div>
+              </div>
               <span class="m-bar-val" id="m-nh3-bahaya-val">0.00</span>
             </div>
           </div>
@@ -514,7 +539,8 @@
               </thead>
               <tbody id="active-rules-body">
                 <tr>
-                  <td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted);">Memuat aturan aktif...</td>
+                  <td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted);">Memuat aturan aktif...
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -537,13 +563,16 @@
           <div class="chart-header-row">
             <div style="display:flex;gap:16px;align-items:center;font-size:12px;font-weight:600;">
               <span style="color:#FF6B00;display:flex;align-items:center;gap:6px;">
-                <span style="width:10px;height:10px;background:#FF6B00;border-radius:2px;display:inline-block;"></span> Suhu (°C)
+                <span style="width:10px;height:10px;background:#FF6B00;border-radius:2px;display:inline-block;"></span>
+                Suhu (°C)
               </span>
               <span style="color:#0284C7;display:flex;align-items:center;gap:6px;">
-                <span style="width:10px;height:10px;background:#0284C7;border-radius:2px;display:inline-block;"></span> Kelembapan (%)
+                <span style="width:10px;height:10px;background:#0284C7;border-radius:2px;display:inline-block;"></span>
+                Kelembapan (%)
               </span>
               <span style="color:#10B981;display:flex;align-items:center;gap:6px;">
-                <span style="width:10px;height:10px;background:#10B981;border-radius:2px;display:inline-block;"></span> Gas Amonia (ppm)
+                <span style="width:10px;height:10px;background:#10B981;border-radius:2px;display:inline-block;"></span>
+                Gas Amonia (ppm)
               </span>
             </div>
 
@@ -577,7 +606,8 @@
             <div style="font-size:13px;font-weight:700;color:var(--text-main);display:flex;align-items:center;gap:6px;">
               <span>🗓️ Filter Berdasarkan Tanggal:</span>
             </div>
-            <span id="log-count-badge" style="font-family:var(--font-mono);font-size:12px;color:var(--primary);font-weight:700;background:var(--primary-glow-sm);padding:4px 10px;border-radius:20px;">
+            <span id="log-count-badge"
+              style="font-family:var(--font-mono);font-size:12px;color:var(--primary);font-weight:700;background:var(--primary-glow-sm);padding:4px 10px;border-radius:20px;">
               Memuat data...
             </span>
           </div>
@@ -594,10 +624,12 @@
             <button class="btn-primary" id="btn-filter-logs" style="width:auto;padding:8px 18px;font-size:12px;">
               🔍 Terapkan Filter
             </button>
-            <button class="chart-btn" id="btn-reset-logs" style="border:1px solid var(--border);padding:8px 14px;background:var(--bg-card);color:var(--text-secondary);font-size:12px;">
+            <button class="chart-btn" id="btn-reset-logs"
+              style="border:1px solid var(--border);padding:8px 14px;background:var(--bg-card);color:var(--text-secondary);font-size:12px;">
               ↺ Hari Ini
             </button>
-            <button class="chart-btn" id="btn-export-logs" style="border:1px solid var(--primary);color:var(--primary);background:var(--primary-glow-sm);padding:8px 14px;font-weight:700;font-size:12px;margin-left:auto;">
+            <button class="chart-btn" id="btn-export-logs"
+              style="border:1px solid var(--primary);color:var(--primary);background:var(--primary-glow-sm);padding:8px 14px;font-weight:700;font-size:12px;margin-left:auto;">
               📥 Unduh CSV
             </button>
           </div>
@@ -644,10 +676,12 @@
         <div class="info-grid">
           <!-- Identitas Penelitian -->
           <div class="info-card">
-            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📋 Identitas Skripsi</h3>
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📋 Identitas Skripsi
+            </h3>
             <div class="info-table-row">
               <span class="info-label">Judul Penelitian</span>
-              <span class="info-val" style="font-size:11px;max-width:180px;text-align:right;">Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam</span>
+              <span class="info-val" style="font-size:11px;max-width:180px;text-align:right;">Rancang Bangun Sistem
+                Otomatisasi Mikroklimat Kandang Ayam</span>
             </div>
             <div class="info-table-row">
               <span class="info-label">Peneliti / Mahasiswa</span>
@@ -665,7 +699,8 @@
 
           <!-- Spesifikasi Perangkat Keras -->
           <div class="info-card">
-            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🔧 Hardware &amp; Cloud</h3>
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🔧 Hardware &amp; Cloud
+            </h3>
             <div class="info-table-row">
               <span class="info-label">Mikrokontroler</span>
               <span class="info-val">ESP32 DevKit V1</span>
@@ -690,7 +725,8 @@
 
           <!-- Standar Parameter Mikroklimat -->
           <div class="info-card">
-            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📐 Parameter Standar Kenyamanan Ayam</h3>
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📐 Parameter Standar
+              Kenyamanan Ayam</h3>
             <div class="info-table-row">
               <span class="info-label">Suhu Ideal</span>
               <span class="info-val" style="color:var(--success);">20.0 °C – 25.0 °C</span>
@@ -711,7 +747,8 @@
 
           <!-- Spesifikasi Metode Fuzzy -->
           <div class="info-card">
-            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🧠 Parameter Algoritma Fuzzy</h3>
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🧠 Parameter Algoritma
+              Fuzzy</h3>
             <div class="info-table-row">
               <span class="info-label">Metode FLC</span>
               <span class="info-val">Mamdani (Max-Min)</span>
@@ -787,7 +824,8 @@
 
       <div class="form-group">
         <label class="form-label">Supabase Anon Key:</label>
-        <input type="password" class="form-input" id="input-sb-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+        <input type="password" class="form-input" id="input-sb-key"
+          placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
       </div>
 
       <div class="form-group">
@@ -806,9 +844,11 @@
     <div class="modal-box" style="max-width:440px;">
       <div class="modal-header">
         <h3 class="modal-title">🔔 Riwayat Peringatan Sistem</h3>
-        <button class="modal-close" onclick="document.getElementById('notif-modal').classList.remove('open')">&times;</button>
+        <button class="modal-close"
+          onclick="document.getElementById('notif-modal').classList.remove('open')">&times;</button>
       </div>
-      <div id="notif-list" style="max-height:350px;overflow-y:auto;border-radius:var(--radius-sm);border:1px solid var(--border);">
+      <div id="notif-list"
+        style="max-height:350px;overflow-y:auto;border-radius:var(--radius-sm);border:1px solid var(--border);">
         <!-- Diisi dinamis oleh app.js -->
       </div>
     </div>
@@ -818,4 +858,5 @@
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
+
 </html>
