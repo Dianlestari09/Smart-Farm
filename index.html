@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartFarm Poultry — Monitor Kandang Ayam Native</title>
+  <meta name="description" content="Dashboard Monitoring Kandang Ayam Pintar Real-Time Native Vanilla HTML/CSS/JS untuk Supabase & Vercel">
+  
+  <!-- Google Fonts Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  
+  <!-- Stylesheet Native -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Supabase Official JS SDK CDN (Mendukung Realtime WebSocket) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       HEADER
+  ══════════════════════════════════════════════════════════════ -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">🐔</div>
+      <div class="brand-title">
+        <div class="brand-name"><span>Smart</span>Farm</div>
+        <div class="brand-subtitle">Poultry Microclimate Monitor</div>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <!-- Status Badge -->
+      <div class="status-badge" id="status-badge-container" title="Status koneksi telemetri">
+        <span class="pulse-dot demo" id="status-dot"></span>
+        <span id="status-text">Memuat status...</span>
+      </div>
+
+      <!-- Clock -->
+      <div class="header-clock" id="header-clock">--:--:--</div>
+
+      <!-- Notification Bell -->
+      <button class="btn-icon" id="btn-notif" title="Notifikasi dan Peringatan">
+        🔔
+        <span class="notif-badge-count" id="notif-badge" style="display: none;">0</span>
+      </button>
+
+      <!-- Settings Button -->
+      <button class="btn-icon" id="btn-open-settings" title="Pengaturan Supabase & Sumber Data">
+        ⚙️
+      </button>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       LAYOUT UTAMA: SIDEBAR + KONTEN
+  ══════════════════════════════════════════════════════════════ -->
+  <div class="layout-wrapper">
+    <!-- Sidebar Desktop -->
+    <aside class="sidebar">
+      <div>
+        <div class="nav-group-title">Menu Utama</div>
+        <ul class="nav-list">
+          <li>
+            <a class="nav-link active" data-view="dashboard">
+              <span class="nav-icon">▣</span>
+              <span>Dashboard</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-link" data-view="fuzzy">
+              <span class="nav-icon">◈</span>
+              <span>Fuzzy Mamdani</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-link" data-view="history">
+              <span class="nav-icon">◫</span>
+              <span>Riwayat Grafik</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-link" data-view="info">
+              <span class="nav-icon">◉</span>
+              <span>Info Sistem & Skripsi</span>
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-footer-title">Platform Stack</div>
+        <div class="tag-list">
+          <span class="tag">Supabase</span>
+          <span class="tag">Vercel</span>
+          <span class="tag">ESP32</span>
+          <span class="tag">SHT31</span>
+          <span class="tag">MQ-137</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Content Area -->
+    <main class="content-area">
+
+      <!-- ────────────────────────────────────────────────────────────
+           VIEW 1: DASHBOARD
+      ──────────────────────────────────────────────────────────── -->
+      <section class="view-section active" id="view-dashboard">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title-main">▣ Dashboard Monitoring</h1>
+            <p class="view-title-desc">Pemantauan mikroklimat kandang ayam petelur secara real-time</p>
+          </div>
+          <div class="cond-badge normal" id="cond-badge">
+            Kondisi Normal
+          </div>
+        </div>
+
+        <!-- Sensor Grid -->
+        <div class="section-headline">
+          <span class="section-icon">📡</span>
+          <h2 class="section-title">Sensor Kandang</h2>
+          <span class="section-sub">SHT31 · MQ-137</span>
+          <div class="section-divider"></div>
+        </div>
+
+        <div class="sensor-grid">
+          <!-- Card Suhu -->
+          <div class="sensor-card">
+            <div class="card-top">
+              <div class="card-label-box">
+                <div class="card-icon">🌡️</div>
+                <div>
+                  <div class="card-title">Suhu Udara</div>
+                  <div class="card-sensor-type">Sensor SHT31</div>
+                </div>
+              </div>
+              <span class="card-badge normal" id="badge-temp">NORMAL</span>
+            </div>
+            <div class="card-value-row">
+              <span class="card-value" id="val-temp">--.-</span>
+              <span class="card-unit">°C</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-bar normal" id="bar-temp" style="width: 45%;"></div>
+            </div>
+            <div class="card-subtext">
+              <span>Zona Nyaman: 20–25°C</span>
+              <span>Batas Kritis: &gt; 32°C</span>
+            </div>
+          </div>
+
+          <!-- Card Kelembapan -->
+          <div class="sensor-card">
+            <div class="card-top">
+              <div class="card-label-box">
+                <div class="card-icon">💧</div>
+                <div>
+                  <div class="card-title">Kelembapan Udara</div>
+                  <div class="card-sensor-type">Sensor SHT31</div>
+                </div>
+              </div>
+              <span class="card-badge normal" id="badge-humid">NORMAL</span>
+            </div>
+            <div class="card-value-row">
+              <span class="card-value" id="val-humid">--.-</span>
+              <span class="card-unit">%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-bar normal" id="bar-humid" style="width: 60%;"></div>
+            </div>
+            <div class="card-subtext">
+              <span>Ideal: 60–80%</span>
+              <span>Batas Kritis: &gt; 90%</span>
+            </div>
+          </div>
+
+          <!-- Card Gas Amonia -->
+          <div class="sensor-card">
+            <div class="card-top">
+              <div class="card-label-box">
+                <div class="card-icon">☁️</div>
+                <div>
+                  <div class="card-title">Gas Amonia (NH₃)</div>
+                  <div class="card-sensor-type">Sensor MQ-137</div>
+                </div>
+              </div>
+              <span class="card-badge normal" id="badge-ammonia">NORMAL</span>
+            </div>
+            <div class="card-value-row">
+              <span class="card-value" id="val-ammonia">--.-</span>
+              <span class="card-unit">ppm</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-bar normal" id="bar-ammonia" style="width: 25%;"></div>
+            </div>
+            <div class="card-subtext">
+              <span>Batas Aman: &lt; 20 ppm</span>
+              <span>Bahaya: &gt; 25 ppm</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Aktuator Grid -->
+        <div class="section-headline">
+          <span class="section-icon">⚙️</span>
+          <h2 class="section-title">Status & Kontrol Aktuator</h2>
+          <span class="section-sub" id="actuator-mode-text">Mode: Otomatis (Fuzzy Mamdani)</span>
+          <div class="section-divider"></div>
+          <button id="btn-reset-auto" style="padding:4px 12px;font-size:11px;font-weight:600;border-radius:20px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer;color:var(--primary);">
+            ↺ Set Otomatis
+          </button>
+        </div>
+
+        <div class="actuator-grid">
+          <!-- Kipas Intake -->
+          <div class="actuator-card" id="act-fan-in">
+            <div class="actuator-top">
+              <div class="actuator-header-info">
+                <div class="actuator-icon">🌀</div>
+                <div>
+                  <div class="actuator-name">Kipas Intake</div>
+                  <div class="actuator-pin">GPIO 25 (Relay 1)</div>
+                </div>
+              </div>
+              <span class="actuator-status-pill" id="pill-fan-in">OFF</span>
+            </div>
+            <div class="actuator-duty-wrap">
+              <div style="display:flex;justify-content:space-between;">
+                <span>Keluaran Fuzzy:</span>
+                <span id="duty-val-fan-in" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+              </div>
+              <div class="actuator-duty-bar">
+                <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 0%;"></div>
+              </div>
+            </div>
+            <div class="switch-row">
+              <span>Manual Override</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="chk-fan-in">
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Kipas Exhaust -->
+          <div class="actuator-card" id="act-fan-out">
+            <div class="actuator-top">
+              <div class="actuator-header-info">
+                <div class="actuator-icon">💨</div>
+                <div>
+                  <div class="actuator-name">Kipas Exhaust</div>
+                  <div class="actuator-pin">GPIO 27 (Relay 2)</div>
+                </div>
+              </div>
+              <span class="actuator-status-pill" id="pill-fan-out">OFF</span>
+            </div>
+            <div class="actuator-duty-wrap">
+              <div style="display:flex;justify-content:space-between;">
+                <span>Keluaran Fuzzy:</span>
+                <span id="duty-val-fan-out" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+              </div>
+              <div class="actuator-duty-bar">
+                <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 0%;"></div>
+              </div>
+            </div>
+            <div class="switch-row">
+              <span>Manual Override</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="chk-fan-out">
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Lampu Pemanas -->
+          <div class="actuator-card" id="act-heater">
+            <div class="actuator-top">
+              <div class="actuator-header-info">
+                <div class="actuator-icon">🔥</div>
+                <div>
+                  <div class="actuator-name">Lampu Pemanas</div>
+                  <div class="actuator-pin">GPIO 26 (Relay 3)</div>
+                </div>
+              </div>
+              <span class="actuator-status-pill" id="pill-heater">OFF</span>
+            </div>
+            <div class="actuator-duty-wrap">
+              <div style="display:flex;justify-content:space-between;">
+                <span>Keluaran Fuzzy:</span>
+                <span id="duty-val-heater" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+              </div>
+              <div class="actuator-duty-bar">
+                <div class="actuator-duty-fill" id="duty-fill-heater" style="width: 0%;"></div>
+              </div>
+            </div>
+            <div class="switch-row">
+              <span>Manual Override</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="chk-heater">
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Motor Konveyor -->
+          <div class="actuator-card" id="act-conveyor">
+            <div class="actuator-top">
+              <div class="actuator-header-info">
+                <div class="actuator-icon">⚙️</div>
+                <div>
+                  <div class="actuator-name">Motor Konveyor</div>
+                  <div class="actuator-pin">GPIO 14 (Relay 4)</div>
+                </div>
+              </div>
+              <span class="actuator-status-pill" id="pill-conveyor">OFF</span>
+            </div>
+            <div class="actuator-duty-wrap">
+              <div style="display:flex;justify-content:space-between;">
+                <span>Keluaran Fuzzy:</span>
+                <span id="duty-val-conveyor" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+              </div>
+              <div class="actuator-duty-bar">
+                <div class="actuator-duty-fill" id="duty-fill-conveyor" style="width: 0%;"></div>
+              </div>
+            </div>
+            <div class="switch-row">
+              <span>Manual Override</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="chk-conveyor">
+                <span class="slider-switch"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ringkasan Fuzzy Card di Dashboard -->
+        <div class="fuzzy-overview-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:20px;">🧠</span>
+              <span style="font-size:15px;font-weight:700;">Ringkasan Fuzzy Mamdani (27 Rule Base)</span>
+            </div>
+            <button class="nav-link" data-view="fuzzy" style="display:inline-flex;padding:5px 12px;font-size:11px;background:var(--primary-glow-sm);color:var(--primary);border-radius:20px;font-weight:700;">
+              Buka Detail FLC →
+            </button>
+          </div>
+          <p style="font-size:12px;color:var(--text-secondary);line-height:1.6;">
+            Logika Fuzzy Controller Mamdani menghitung derajat keanggotaan 3 parameter (Suhu, Kelembapan, dan Gas Amonia) untuk menentukan tindakan otomatis 4 perangkat aktuator kandang.
+          </p>
+        </div>
+      </section>
+
+      <!-- ────────────────────────────────────────────────────────────
+           VIEW 2: FUZZY LOGIC MAMDANI
+      ──────────────────────────────────────────────────────────── -->
+      <section class="view-section" id="view-fuzzy">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title-main">◈ Fuzzy Logic Mamdani</h1>
+            <p class="view-title-desc">Visualisasi Fuzzifikasi, Inferensi 27 Aturan, dan Defuzzifikasi Centroid</p>
+          </div>
+        </div>
+
+        <!-- Live Simulator Sliders -->
+        <div class="fuzzy-simulator-box">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:14px;font-weight:700;color:var(--text-main);">🎛️ Simulator Nilai Input Sensor (Uji Coba Sidang Skripsi)</span>
+            <span style="font-size:11px;color:var(--text-muted);">Geser slider untuk menguji respon 27 aturan</span>
+          </div>
+          <div class="sim-slider-row">
+            <!-- Slider Suhu -->
+            <div class="sim-slider-item">
+              <div class="sim-slider-label">
+                <span>Input Suhu Udara:</span>
+                <span class="sim-slider-val" id="sim-temp-val">24.0 °C</span>
+              </div>
+              <input type="range" id="sim-temp" min="10" max="40" step="0.5" value="24">
+            </div>
+
+            <!-- Slider Kelembapan -->
+            <div class="sim-slider-item">
+              <div class="sim-slider-label">
+                <span>Input Kelembapan:</span>
+                <span class="sim-slider-val" id="sim-hum-val">68.0 %</span>
+              </div>
+              <input type="range" id="sim-hum" min="30" max="100" step="1" value="68">
+            </div>
+
+            <!-- Slider Amonia -->
+            <div class="sim-slider-item">
+              <div class="sim-slider-label">
+                <span>Input Gas Amonia:</span>
+                <span class="sim-slider-val" id="sim-nh3-val">12.0 ppm</span>
+              </div>
+              <input type="range" id="sim-nh3" min="0" max="50" step="0.5" value="12">
+            </div>
+          </div>
+
+          <div id="sim-output-text" style="margin-top:14px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);font-family:var(--font-mono);">
+            Menghitung output...
+          </div>
+        </div>
+
+        <!-- Derajat Keanggotaan (Membership Degrees) -->
+        <div class="section-headline">
+          <span class="section-icon">📊</span>
+          <h2 class="section-title">1. Derajat Keanggotaan (Fuzzifikasi)</h2>
+          <div class="section-divider"></div>
+        </div>
+
+        <div class="membership-grid">
+          <!-- Suhu -->
+          <div class="membership-card">
+            <div class="membership-title">
+              <span>🌡️ Suhu Udara</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Dingin</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-dingin" style="width:0%;background:#38BDF8;"></div></div>
+              <span class="m-bar-val" id="m-temp-dingin-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Normal</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-normal" style="width:0%;background:#16A34A;"></div></div>
+              <span class="m-bar-val" id="m-temp-normal-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Panas</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-temp-panas" style="width:0%;background:#DC2626;"></div></div>
+              <span class="m-bar-val" id="m-temp-panas-val">0.00</span>
+            </div>
+          </div>
+
+          <!-- Kelembapan -->
+          <div class="membership-card">
+            <div class="membership-title">
+              <span>💧 Kelembapan Udara</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Kering</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-kering" style="width:0%;background:#D97706;"></div></div>
+              <span class="m-bar-val" id="m-hum-kering-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Normal</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-normal" style="width:0%;background:#16A34A;"></div></div>
+              <span class="m-bar-val" id="m-hum-normal-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Basah</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-hum-basah" style="width:0%;background:#0284C7;"></div></div>
+              <span class="m-bar-val" id="m-hum-basah-val">0.00</span>
+            </div>
+          </div>
+
+          <!-- Amonia -->
+          <div class="membership-card">
+            <div class="membership-title">
+              <span>☁️ Gas Amonia (NH₃)</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Aman</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-aman" style="width:0%;background:#16A34A;"></div></div>
+              <span class="m-bar-val" id="m-nh3-aman-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Waspada</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-waspada" style="width:0%;background:#D97706;"></div></div>
+              <span class="m-bar-val" id="m-nh3-waspada-val">0.00</span>
+            </div>
+            <div class="m-bar-row">
+              <span class="m-bar-name">Bahaya</span>
+              <div class="m-bar-track"><div class="m-bar-fill" id="m-nh3-bahaya" style="width:0%;background:#DC2626;"></div></div>
+              <span class="m-bar-val" id="m-nh3-bahaya-val">0.00</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Rules Table -->
+        <div class="section-headline">
+          <span class="section-icon">📜</span>
+          <h2 class="section-title">2. Aturan Fuzzy Aktif (Inferensi MIN)</h2>
+          <div class="section-divider"></div>
+        </div>
+
+        <div class="fuzzy-overview-card" style="padding:16px;">
+          <div class="rules-table-container">
+            <table class="rules-table">
+              <thead>
+                <tr>
+                  <th style="width:70px;">Rule ID</th>
+                  <th>Antecedent (Kondisi IF)</th>
+                  <th>Consequent (Aksi THEN)</th>
+                  <th style="text-align:right;width:120px;">Firing Strength (&alpha;)</th>
+                </tr>
+              </thead>
+              <tbody id="active-rules-body">
+                <tr>
+                  <td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted);">Memuat aturan aktif...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ────────────────────────────────────────────────────────────
+           VIEW 3: RIWAYAT GRAFIK
+      ──────────────────────────────────────────────────────────── -->
+      <section class="view-section" id="view-history">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title-main">◫ Riwayat Grafik Sensor</h1>
+            <p class="view-title-desc">Grafik tren pembacaan mikroklimat kandang dari database Supabase</p>
+          </div>
+        </div>
+
+        <div class="chart-card">
+          <div class="chart-header-row">
+            <div style="display:flex;gap:16px;align-items:center;font-size:12px;font-weight:600;">
+              <span style="color:#FF6B00;display:flex;align-items:center;gap:6px;">
+                <span style="width:10px;height:10px;background:#FF6B00;border-radius:2px;display:inline-block;"></span> Suhu (°C)
+              </span>
+              <span style="color:#0284C7;display:flex;align-items:center;gap:6px;">
+                <span style="width:10px;height:10px;background:#0284C7;border-radius:2px;display:inline-block;"></span> Kelembapan (%)
+              </span>
+              <span style="color:#D97706;display:flex;align-items:center;gap:6px;">
+                <span style="width:10px;height:10px;background:#D97706;border-radius:2px;display:inline-block;"></span> Gas Amonia (ppm)
+              </span>
+            </div>
+
+            <div class="chart-btn-group">
+              <button class="chart-btn active" data-range="1h">1 Jam</button>
+              <button class="chart-btn" data-range="6h">6 Jam</button>
+              <button class="chart-btn" data-range="24h">24 Jam</button>
+            </div>
+          </div>
+
+          <div class="canvas-container">
+            <canvas id="history-chart-canvas"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- ────────────────────────────────────────────────────────────
+           VIEW 4: INFO SISTEM & SKRIPSI
+      ──────────────────────────────────────────────────────────── -->
+      <section class="view-section" id="view-info">
+        <div class="view-header">
+          <div>
+            <h1 class="view-title-main">◉ Info Sistem &amp; Naskah Skripsi</h1>
+            <p class="view-title-desc">Spesifikasi hardware, parameter mikroklimat, dan data penelitian</p>
+          </div>
+        </div>
+
+        <div class="info-grid">
+          <!-- Identitas Penelitian -->
+          <div class="info-card">
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📋 Identitas Skripsi</h3>
+            <div class="info-table-row">
+              <span class="info-label">Judul Penelitian</span>
+              <span class="info-val" style="font-size:11px;max-width:180px;text-align:right;">Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Peneliti / Mahasiswa</span>
+              <span class="info-val">Dian Lestari Kurniawati</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">NIM</span>
+              <span class="info-val">230605110016</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Subjek Penelitian</span>
+              <span class="info-val">Kandang Ayam Petelur (Layer)</span>
+            </div>
+          </div>
+
+          <!-- Spesifikasi Perangkat Keras -->
+          <div class="info-card">
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🔧 Hardware &amp; Cloud</h3>
+            <div class="info-table-row">
+              <span class="info-label">Mikrokontroler</span>
+              <span class="info-val">ESP32 DevKit V1</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Sensor Suhu &amp; Kelembapan</span>
+              <span class="info-val">SHT31 (I2C) / DHT22 (GPIO 4)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Sensor Gas Amonia</span>
+              <span class="info-val">MQ-137 (ADC GPIO 34)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Cloud Database</span>
+              <span class="info-val">Supabase PostgreSQL (Realtime)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Web Hosting</span>
+              <span class="info-val">Vercel (Edge Network)</span>
+            </div>
+          </div>
+
+          <!-- Standar Parameter Mikroklimat -->
+          <div class="info-card">
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">📐 Parameter Standar Kenyamanan Ayam</h3>
+            <div class="info-table-row">
+              <span class="info-label">Suhu Ideal</span>
+              <span class="info-val" style="color:var(--success);">20.0 °C – 25.0 °C</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Kelembapan Ideal</span>
+              <span class="info-val" style="color:var(--success);">60.0 % – 80.0 %</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Batas Aman Gas Amonia</span>
+              <span class="info-val" style="color:var(--success);">&lt; 20.0 ppm</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Batas Bahaya Amonia</span>
+              <span class="info-val" style="color:var(--danger);">&gt; 25.0 ppm</span>
+            </div>
+          </div>
+
+          <!-- Spesifikasi Metode Fuzzy -->
+          <div class="info-card">
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🧠 Parameter Algoritma Fuzzy</h3>
+            <div class="info-table-row">
+              <span class="info-label">Metode FLC</span>
+              <span class="info-val">Mamdani (Max-Min)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Jumlah Aturan (Rule Base)</span>
+              <span class="info-val">27 Aturan (3 × 3 × 3)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Operasi Implikasi</span>
+              <span class="info-val">MIN (AND)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Defuzzifikasi</span>
+              <span class="info-val">Centroid (Center of Area)</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       MOBILE BOTTOM NAV (Untuk layar HP/Smartphone)
+  ══════════════════════════════════════════════════════════════ -->
+  <nav class="mobile-bottom-nav">
+    <a class="nav-link active" data-view="dashboard" style="flex-direction:column;font-size:10px;padding:6px;">
+      <span style="font-size:18px;">▣</span>
+      <span>Dashboard</span>
+    </a>
+    <a class="nav-link" data-view="fuzzy" style="flex-direction:column;font-size:10px;padding:6px;">
+      <span style="font-size:18px;">◈</span>
+      <span>Fuzzy</span>
+    </a>
+    <a class="nav-link" data-view="history" style="flex-direction:column;font-size:10px;padding:6px;">
+      <span style="font-size:18px;">◫</span>
+      <span>Riwayat</span>
+    </a>
+    <a class="nav-link" data-view="info" style="flex-direction:column;font-size:10px;padding:6px;">
+      <span style="font-size:18px;">◉</span>
+      <span>Info</span>
+    </a>
+  </nav>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       MODAL PENGATURAN KONEKSI (SUPABASE / ESP32 / DEMO)
+  ══════════════════════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title">⚙️ Pengaturan Supabase &amp; Data Source</h3>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Mode Koneksi:</label>
+        <select class="form-input" id="input-conn-mode">
+          <option value="supabase">Supabase Cloud Database (Realtime WebSocket)</option>
+          <option value="demo">Mode Simulasi (Demo Otomatis)</option>
+          <option value="esp32">ESP32 Local REST IP (Kandang Offline)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Supabase URL:</label>
+        <input type="text" class="form-input" id="input-sb-url" placeholder="https://xyzabcdefg.supabase.co">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Supabase Anon Key:</label>
+        <input type="password" class="form-input" id="input-sb-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Alamat IP ESP32 (Opsional jika mode lokal):</label>
+        <input type="text" class="form-input" id="input-esp32-ip" placeholder="http://192.168.4.1">
+      </div>
+
+      <button class="btn-primary" id="btn-save-settings">Simpan &amp; Hubungkan</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       MODAL NOTIFIKASI
+  ══════════════════════════════════════════════════════════════ -->
+  <div class="modal-overlay" id="notif-modal">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header">
+        <h3 class="modal-title">🔔 Riwayat Peringatan Sistem</h3>
+        <button class="modal-close" onclick="document.getElementById('notif-modal').classList.remove('open')">&times;</button>
+      </div>
+      <div id="notif-list" style="max-height:350px;overflow-y:auto;border-radius:var(--radius-sm);border:1px solid var(--border);">
+        <!-- Diisi dinamis oleh app.js -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Konfigurasi Supabase & Script Aplikasi Native -->
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
