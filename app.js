@@ -45,13 +45,15 @@
     supabaseClient: null,
     supabaseChannels: [],
 
-    // Live sensor values
+    // Live sensor values dari database (null jika sensor terputus / offline)
     sensors: {
-      suhu: 24.2,
-      kelembapan: 68.5,
-      amonia: 12.4,
-      timestamp: new Date()
+      suhu: null,
+      kelembapan: null,
+      amonia: null,
+      timestamp: null
     },
+    isHardwareOnline: false,
+    latestRow: null,
 
     // Actuator states (PWM 0-100 & Konveyor boolean)
     actuators: {
@@ -77,6 +79,7 @@
 
     // Chart settings
     chartRange: '1h',
+    hoveredChartPoint: null,
     timerId: null,
 
     // Rule table display mode: 'active' | 'all'
@@ -359,17 +362,46 @@
   // Sesuai Tabel 3.5 Proposal Skripsi
   // ════════════════════════════════════════════════════════════════
 
-  function initMockHistory() {
-    const hist = [];
+  function generateMockHistoryForRange(range = state.chartRange) {
+    const hours = range === '24h' ? 24 : (range === '6h' ? 6 : 1);
+    const count = range === '24h' ? 48 : (range === '6h' ? 36 : 30);
+    const stepMs = (hours * 3600 * 1000) / count;
     const now = Date.now();
-    for (let i = 30; i >= 0; i--) {
-      const time = new Date(now - i * 60 * 1000);
-      const suhu = +(23.5 + Math.sin(i * 0.18) * 3 + (Math.random() - 0.5) * 0.8).toFixed(1);
-      const kelembapan = +(68.0 + Math.cos(i * 0.12) * 6 + (Math.random() - 0.5) * 1.5).toFixed(1);
-      const amonia = +(12.5 + Math.sin(i * 0.25) * 4 + (Math.random() - 0.5) * 1.0).toFixed(1);
+    const hist = [];
 
-      // Hitung simulasi aktuator
+    for (let i = count; i >= 0; i--) {
+      const time = new Date(now - i * stepMs);
+      const hoursAgo = (now - time.getTime()) / (3600 * 1000);
+
+      // Fluktuasi siklus yang realistis sesuai rentang jam
+      let baseTemp = 24.2;
+      let baseHum = 68.0;
+      let baseNh3 = 12.0;
+
+      if (range === '24h') {
+        // Siklus diurnal 24 jam (siang lebih panas, malam lebih dingin & lembap)
+        const hourOfDay = time.getHours() + time.getMinutes() / 60;
+        baseTemp = 24.5 + Math.sin((hourOfDay - 9) * Math.PI / 12) * 4.5;
+        baseHum = 67.0 - Math.sin((hourOfDay - 9) * Math.PI / 12) * 8.0;
+        baseNh3 = 13.0 + Math.cos((hourOfDay - 14) * Math.PI / 12) * 4.0;
+      } else if (range === '6h') {
+        // Tren dinamis 6 jam
+        baseTemp = 24.2 + Math.sin(hoursAgo * 1.2) * 2.8;
+        baseHum = 68.5 - Math.sin(hoursAgo * 1.1) * 4.5;
+        baseNh3 = 12.5 + Math.cos(hoursAgo * 1.4) * 3.2;
+      } else {
+        // Fluktuasi mikro 1 jam
+        baseTemp = 24.5 + Math.sin(hoursAgo * 4.5) * 1.2;
+        baseHum = 69.0 + Math.cos(hoursAgo * 3.8) * 2.0;
+        baseNh3 = 12.2 + Math.sin(hoursAgo * 5.0) * 1.5;
+      }
+
+      const suhu = +(baseTemp + (Math.random() - 0.5) * 0.4).toFixed(1);
+      const kelembapan = +(baseHum + (Math.random() - 0.5) * 0.8).toFixed(1);
+      const amonia = +(baseNh3 + (Math.random() - 0.5) * 0.5).toFixed(1);
+
       const fSim = computeFuzzyMamdani(suhu, kelembapan, amonia);
+
       hist.push({
         time,
         suhu: Number(suhu),
@@ -381,7 +413,73 @@
         status_konveyor: fSim.states.conveyor
       });
     }
+
     state.history = hist;
+  }
+
+  // ─── VALIDATOR SENSOR FISIK (Bukan Dummy & Bukan Sentinel -999) ───
+  function isSensorValid(val, minLimit = -40, maxLimit = 150) {
+    if (val === null || val === undefined) return false;
+    const num = Number(val);
+    if (isNaN(num)) return false;
+    if (num <= -900) return false; // Nilai -999 menandakan sensor fisik terputus
+    if (num < minLimit || num > maxLimit) return false;
+    return true;
+  }
+
+  async function fetchChartHistory(range = state.chartRange) {
+    const hours = range === '24h' ? 24 : (range === '6h' ? 6 : 1);
+    const cut = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+    if (state.connectionMode === 'supabase' && state.supabaseClient) {
+      try {
+        const { data, error } = await state.supabaseClient
+          .from('telemetry')
+          .select('*')
+          .gte('created_at', cut)
+          .order('created_at', { ascending: true })
+          .limit(range === '24h' ? 500 : (range === '6h' ? 300 : 100));
+
+        if (!error) {
+          // HANYA gunakan data nyata yang tersimpan di tabel telemetry Supabase!
+          state.history = (data || []).map(d => {
+            const rawT = d.suhu !== undefined ? d.suhu : d.temperature;
+            const rawH = d.kelembapan !== undefined ? d.kelembapan : d.humidity;
+            const rawA = d.amonia !== undefined ? d.amonia : d.ammonia;
+
+            const tValid = isSensorValid(rawT, 0, 60);
+            const hValid = isSensorValid(rawH, 0, 100);
+            const aValid = isSensorValid(rawA, 0, 200);
+
+            return {
+              time: new Date(d.created_at),
+              suhu: tValid ? Number(rawT) : null,
+              kelembapan: hValid ? Number(rawH) : null,
+              amonia: aValid ? Number(rawA) : null,
+              pwm_intake: Number(d.pwm_intake || 0),
+              pwm_exhaust: Number(d.pwm_exhaust || 0),
+              pwm_pemanas: Number(d.pwm_pemanas || 0),
+              status_konveyor: Boolean(d.status_konveyor)
+            };
+          });
+          renderCanvasChart();
+          return;
+        }
+      } catch (err) {
+        console.warn('Gagal memuat histori Supabase untuk rentang', range, err);
+      }
+    }
+
+    if (state.connectionMode === 'demo') {
+      generateMockHistoryForRange(range);
+    } else {
+      state.history = [];
+    }
+    renderCanvasChart();
+  }
+
+  function initMockHistory() {
+    generateMockHistoryForRange(state.chartRange || '1h');
   }
 
   function tickDemoData() {
@@ -435,33 +533,32 @@
 
       if (latestRows && latestRows.length > 0) {
         const latest = latestRows[0];
-        updateTelemetryData(latest);
+        state.latestRow = latest;
+        state.lastEsp32Heartbeat = new Date(latest.created_at);
+        evaluateEsp32Status();
+
+        if (state.isHardwareOnline) {
+          updateTelemetryData(latest);
+        } else {
+          // Sensor sedang offline: Dashboard menampilkan '--' (tidak ada data aktif)
+          state.sensors.suhu = null;
+          state.sensors.kelembapan = null;
+          state.sensors.amonia = null;
+          state.sensors.timestamp = new Date(latest.created_at);
+          renderUI();
+        }
       } else {
-        console.log('Tabel telemetry masih kosong. Menunggu data telemetri pertama dari ESP32...');
+        state.latestRow = null;
+        state.lastEsp32Heartbeat = null;
+        state.sensors.suhu = null;
+        state.sensors.kelembapan = null;
+        state.sensors.amonia = null;
+        state.sensors.timestamp = null;
+        evaluateEsp32Status();
+        renderUI();
       }
-
-      // 2. Ambil riwayat telemetri 24 jam terakhir untuk grafik
-      const cut = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-      const { data: histData, error: errHist } = await state.supabaseClient
-        .from('telemetry')
-        .select('*')
-        .gte('created_at', cut)
-        .order('created_at', { ascending: true })
-        .limit(100);
-
-      if (!errHist && histData && histData.length > 0) {
-        state.history = histData.map(d => ({
-          time: new Date(d.created_at),
-          suhu: Number(d.suhu),
-          kelembapan: Number(d.kelembapan),
-          amonia: Number(d.amonia),
-          pwm_intake: Number(d.pwm_intake || 0),
-          pwm_exhaust: Number(d.pwm_exhaust || 0),
-          pwm_pemanas: Number(d.pwm_pemanas || 0),
-          status_konveyor: Boolean(d.status_konveyor)
-        }));
-        if (state.currentView === 'history') renderCanvasChart();
-      }
+      // 2. Ambil riwayat telemetri dari database Supabase untuk grafik
+      await fetchChartHistory(state.chartRange || '1h');
 
       // 3. Berlangganan Supabase Realtime WebSocket ke tabel tunggal 'telemetry'
       state.supabaseChannels.forEach(ch => state.supabaseClient.removeChannel(ch));
@@ -522,15 +619,10 @@
 
   // ─── UPDATE STATE TELEMETRI ───────────────────────────────────
   function updateTelemetryData(row) {
-    const suhu = Number(row.suhu !== undefined ? row.suhu : row.temperature);
-    const kelembapan = Number(row.kelembapan !== undefined ? row.kelembapan : row.humidity);
-    const amonia = Number(row.amonia !== undefined ? row.amonia : row.ammonia);
+    const rawSuhu = row.suhu !== undefined ? row.suhu : row.temperature;
+    const rawHumid = row.kelembapan !== undefined ? row.kelembapan : row.humidity;
+    const rawAmonia = row.amonia !== undefined ? row.amonia : row.ammonia;
     const timestamp = row.created_at ? new Date(row.created_at) : new Date();
-
-    state.sensors.suhu = suhu;
-    state.sensors.kelembapan = kelembapan;
-    state.sensors.amonia = amonia;
-    state.sensors.timestamp = timestamp;
 
     // Catat heartbeat ESP32
     if (state.connectionMode === 'demo') {
@@ -541,8 +633,49 @@
 
     evaluateEsp32Status();
 
-    // Jalankan kalkulasi Fuzzy Mamdani 125 rules di browser
-    state.fuzzy = computeFuzzyMamdani(suhu, kelembapan, amonia);
+    // Periksa validitas masing-masing sensor fisik (nilai < 0 seperti -999 atau NaN berarti sensor terputus)
+    const suhuValid = isSensorValid(rawSuhu, 0, 60);
+    const humidValid = isSensorValid(rawHumid, 0, 100);
+    const amoniaValid = isSensorValid(rawAmonia, 0, 200);
+
+    const suhu = suhuValid ? Number(rawSuhu) : null;
+    const kelembapan = humidValid ? Number(rawHumid) : null;
+    const amonia = amoniaValid ? Number(rawAmonia) : null;
+
+    // Jika seluruh hardware ESP32 terputus (data lama > 15 detik), reset semua sensor
+    if (!state.isHardwareOnline && state.connectionMode !== 'demo') {
+      state.sensors.suhu = null;
+      state.sensors.kelembapan = null;
+      state.sensors.amonia = null;
+      state.sensors.timestamp = timestamp;
+      renderUI();
+      return;
+    }
+
+    state.sensors.suhu = suhu;
+    state.sensors.kelembapan = kelembapan;
+    state.sensors.amonia = amonia;
+    state.sensors.timestamp = timestamp;
+
+    // Jalankan kalkulasi Fuzzy Mamdani 125 rules jika semua sensor terpasang
+    if (suhu !== null && kelembapan !== null && amonia !== null) {
+      state.fuzzy = computeFuzzyMamdani(suhu, kelembapan, amonia);
+    } else {
+      let condLabel = 'Sensor Belum Terpasang';
+      if (suhu !== null && kelembapan !== null && amonia === null) {
+        condLabel = 'Sensor MQ-135 Terputus';
+      } else if ((suhu === null || kelembapan === null) && amonia !== null) {
+        condLabel = 'Sensor SHT31 Terputus';
+      }
+      state.fuzzy = {
+        crisp: { fanIntake: 0, fanExhaust: 0, heater: 0 },
+        states: { intake: false, exhaust: false, heater: false, conveyor: false },
+        conditionLabel: condLabel,
+        statusClass: 'offline',
+        activeRules: [],
+        membership: null
+      };
+    }
 
     // Jika baris dari ESP32 memuat nilai aktuator nyata dari database, gunakan nilai tersebut
     if (row.pwm_intake !== undefined && row.pwm_intake !== null && !state.actuators.isManual) {
@@ -550,53 +683,64 @@
       state.actuators.pwmExhaust = Number(row.pwm_exhaust);
       state.actuators.pwmPemanas = Number(row.pwm_pemanas);
       state.actuators.statusKonveyor = Boolean(row.status_konveyor);
-    } else if (!state.actuators.isManual) {
+    } else if (!state.actuators.isManual && state.fuzzy) {
       state.actuators.pwmIntake = state.fuzzy.crisp.fanIntake;
       state.actuators.pwmExhaust = state.fuzzy.crisp.fanExhaust;
       state.actuators.pwmPemanas = state.fuzzy.crisp.heater;
       state.actuators.statusKonveyor = state.fuzzy.states.conveyor;
     }
 
-    // Rekam histori grafik (max 60 titik)
-    state.history.push({
-      time: timestamp,
-      suhu,
-      kelembapan,
-      amonia,
-      pwm_intake: state.actuators.pwmIntake,
-      pwm_exhaust: state.actuators.pwmExhaust,
-      pwm_pemanas: state.actuators.pwmPemanas,
-      status_konveyor: state.actuators.statusKonveyor
-    });
-    if (state.history.length > 60) state.history.shift();
+    // Rekam histori grafik secara live jika alat sedang online
+    if (state.connectionMode === 'demo' || state.isHardwareOnline) {
+      const exists = state.history.some(h => {
+        const ht = h.time instanceof Date ? h.time.getTime() : new Date(h.time).getTime();
+        return Math.abs(ht - timestamp.getTime()) < 1000;
+      });
+      if (!exists) {
+        state.history.push({
+          time: timestamp,
+          suhu: suhu,
+          kelembapan: kelembapan,
+          amonia: amonia,
+          pwm_intake: state.actuators.pwmIntake,
+          pwm_exhaust: state.actuators.pwmExhaust,
+          pwm_pemanas: state.actuators.pwmPemanas,
+          status_konveyor: state.actuators.statusKonveyor
+        });
+        const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
+        const maxHist = Math.max(60, rangeHours * 15);
+        if (state.history.length > maxHist) state.history.shift();
+      }
+    }
 
-    // Evaluasi alarm peringatan
+    // Evaluasi alarm peringatan hanya untuk sensor yang aktif
     checkAlerts(suhu, kelembapan, amonia);
 
     // Refresh UI
     renderUI();
+    if (state.currentView === 'history') renderCanvasChart();
   }
 
   function checkAlerts(t, h, a) {
     const alerts = [];
     const ts = new Date().toLocaleTimeString('id-ID');
 
-    if (a >= THRESHOLDS.ammonia.danger) {
-      alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a} ppm (Ambang Batas >= 20 ppm)`, time: ts });
-    } else if (a >= THRESHOLDS.ammonia.warning) {
-      alerts.push({ type: 'warning', msg: `Gas Amonia Meningkat: ${a} ppm (Waspada >= 15 ppm)`, time: ts });
+    if (a !== null && a >= THRESHOLDS.ammonia.danger) {
+      alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a.toFixed(1)} ppm (Ambang Batas >= 20 ppm)`, time: ts });
+    } else if (a !== null && a >= THRESHOLDS.ammonia.warning) {
+      alerts.push({ type: 'warning', msg: `Gas Amonia Meningkat: ${a.toFixed(1)} ppm (Waspada >= 15 ppm)`, time: ts });
     }
 
-    if (t >= THRESHOLDS.temperature.danger) {
-      alerts.push({ type: 'danger', msg: `Suhu Udara Ekstrem: ${t}°C (Risiko Heat Stress Tinggi > 31°C)`, time: ts });
-    } else if (t >= THRESHOLDS.temperature.warning) {
-      alerts.push({ type: 'warning', msg: `Suhu Udara Panas: ${t}°C (Ideal 20–25°C)`, time: ts });
-    } else if (t <= 14.0) {
-      alerts.push({ type: 'danger', msg: `Suhu Sangat Dingin: ${t}°C (Risiko Hipotermia Ayam)`, time: ts });
+    if (t !== null && t >= THRESHOLDS.temperature.danger) {
+      alerts.push({ type: 'danger', msg: `Suhu Udara Ekstrem: ${t.toFixed(1)}°C (Risiko Heat Stress Tinggi > 31°C)`, time: ts });
+    } else if (t !== null && t >= THRESHOLDS.temperature.warning) {
+      alerts.push({ type: 'warning', msg: `Suhu Udara Panas: ${t.toFixed(1)}°C (Ideal 20–25°C)`, time: ts });
+    } else if (t !== null && t <= 14.0) {
+      alerts.push({ type: 'danger', msg: `Suhu Sangat Dingin: ${t.toFixed(1)}°C (Risiko Hipotermia Ayam)`, time: ts });
     }
 
-    if (h >= THRESHOLDS.humidity.danger) {
-      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h}% (Kandang Terlalu Basah > 90%)`, time: ts });
+    if (h !== null && h >= THRESHOLDS.humidity.danger) {
+      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h.toFixed(1)}% (Kandang Terlalu Basah > 90%)`, time: ts });
     }
 
     if (alerts.length > 0) {
@@ -685,27 +829,39 @@
 
     // Hitung selisih waktu telemetri terhadap waktu sekarang (dalam detik)
     const diff = Math.max(0, Math.round((Date.now() - state.lastEsp32Heartbeat.getTime()) / 1000));
+    const prevOnline = state.isHardwareOnline;
+    state.isHardwareOnline = diff <= 15; // Online jika ada data baru dalam 15 detik terakhir
 
-    if (diff <= 10) {
-      // ONLINE: Data telemetri diterima dalam 10 detik terakhir
+    const timeStr = state.lastEsp32Heartbeat.toLocaleTimeString('id-ID');
+
+    if (state.isHardwareOnline) {
       dot.className = 'pulse-dot';
       text.textContent = 'ESP32: Terhubung (Online)';
-      if (timeEl) timeEl.textContent = diff <= 1 ? '(Live)' : `(${diff}d lalu)`;
+      if (timeEl) timeEl.textContent = diff <= 2 ? '(Live)' : `(${diff}d lalu)`;
       if (chipDot) chipDot.className = 'pulse-dot';
       if (chipText) {
-        chipText.textContent = `ESP32: Terhubung (Online) ${diff <= 1 ? '(Live)' : '(' + diff + 's lalu)'}`;
+        chipText.textContent = `ESP32: Terhubung (Online) ${diff <= 2 ? '(Live)' : '(' + diff + 's lalu)'}`;
         chipText.style.color = 'var(--success)';
       }
     } else {
-      // OFFLINE: Lebih dari 10 detik tanpa data baru
       dot.className = 'pulse-dot offline';
       text.textContent = 'ESP32: Terputus (Offline)';
-      if (timeEl) timeEl.textContent = `(${diff}d lalu)`;
+      if (timeEl) timeEl.textContent = `(Terakhir ${timeStr})`;
       if (chipDot) chipDot.className = 'pulse-dot offline';
       if (chipText) {
-        chipText.textContent = `ESP32: Terputus (Offline) (Terakhir ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
+        chipText.textContent = `ESP32: Terputus (Offline) (Terakhir ${timeStr})`;
         chipText.style.color = 'var(--danger)';
       }
+    }
+
+    if (!state.isHardwareOnline && state.connectionMode !== 'demo') {
+      state.sensors.suhu = null;
+      state.sensors.kelembapan = null;
+      state.sensors.amonia = null;
+    }
+
+    if (prevOnline !== state.isHardwareOnline) {
+      renderUI();
     }
   }
 
@@ -722,32 +878,63 @@
   function renderUI() {
     const s = state.sensors;
     const f = state.fuzzy;
-    if (!f) return;
+    const isOnline = state.connectionMode === 'demo' ? true : state.isHardwareOnline;
 
     // Header Clock
     const clockEl = document.getElementById('header-clock');
-    if (clockEl) clockEl.textContent = s.timestamp.toLocaleTimeString('id-ID');
+    if (clockEl) {
+      clockEl.textContent = (s.timestamp || new Date()).toLocaleTimeString('id-ID');
+    }
 
     // Condition Badge (Dashboard)
     const condBadge = document.getElementById('cond-badge');
     if (condBadge) {
-      condBadge.className = `cond-badge ${f.statusClass}`;
-      condBadge.textContent = f.conditionLabel;
+      if (!isOnline) {
+        condBadge.className = 'cond-badge offline';
+        condBadge.textContent = 'ESP32 Terputus (Offline)';
+      } else if (f) {
+        condBadge.className = `cond-badge ${f.statusClass}`;
+        condBadge.textContent = f.conditionLabel;
+      } else {
+        condBadge.className = 'cond-badge';
+        condBadge.textContent = 'Menunggu Sensor...';
+      }
     }
 
-    // ─── 1. Sensor Cards ───
-    updateCard('temp', s.suhu, THRESHOLDS.temperature, '°C');
-    updateCard('humid', s.kelembapan, THRESHOLDS.humidity, '%');
-    updateCard('ammonia', s.amonia, THRESHOLDS.ammonia, 'ppm');
+    // ─── 1. Sensor Cards (Suhu, Kelembapan, Gas Amonia) ───
+    if (!isOnline || s.suhu === null) {
+      renderOfflineSensorCard('temp', !isOnline ? 'OFFLINE' : 'TERPUTUS');
+    } else {
+      updateCard('temp', s.suhu, THRESHOLDS.temperature, '°C');
+    }
+
+    if (!isOnline || s.kelembapan === null) {
+      renderOfflineSensorCard('humid', !isOnline ? 'OFFLINE' : 'TERPUTUS');
+    } else {
+      updateCard('humid', s.kelembapan, THRESHOLDS.humidity, '%');
+    }
+
+    if (!isOnline || s.amonia === null) {
+      renderOfflineSensorCard('ammonia', !isOnline ? 'OFFLINE' : 'TERPUTUS');
+    } else {
+      updateCard('ammonia', s.amonia, THRESHOLDS.ammonia, 'ppm');
+    }
 
     // ─── 2. Actuator Cards (Dashboard) ───
-    updateActuatorCard('fan-in', state.actuators.pwmIntake > 0, state.actuators.pwmIntake);
-    updateActuatorCard('fan-out', state.actuators.pwmExhaust > 0, state.actuators.pwmExhaust);
-    updateActuatorCard('heater', state.actuators.pwmPemanas > 0, state.actuators.pwmPemanas);
-    updateActuatorCard('conveyor', state.actuators.statusKonveyor, state.actuators.statusKonveyor ? 100 : 0);
+    if (!isOnline) {
+      renderOfflineActuatorCard('fan-in');
+      renderOfflineActuatorCard('fan-out');
+      renderOfflineActuatorCard('heater');
+      renderOfflineActuatorCard('conveyor');
+    } else {
+      updateActuatorCard('fan-in', state.actuators.pwmIntake > 0, state.actuators.pwmIntake);
+      updateActuatorCard('fan-out', state.actuators.pwmExhaust > 0, state.actuators.pwmExhaust);
+      updateActuatorCard('heater', state.actuators.pwmPemanas > 0, state.actuators.pwmPemanas);
+      updateActuatorCard('conveyor', state.actuators.statusKonveyor, state.actuators.statusKonveyor ? 100 : 0);
+    }
 
     // ─── 3. Fuzzifikasi 5 Himpunan Keanggotaan ───
-    updateMembershipDisplay(f.membership);
+    updateMembershipDisplay(isOnline && f ? f.membership : null);
 
     // ─── 4. Tabel Aturan Mamdani ───
     renderRulesTable();
@@ -767,6 +954,34 @@
     if (state.currentView === 'history') {
       renderCanvasChart();
     }
+  }
+
+  function renderOfflineSensorCard(idPrefix, labelText = 'OFFLINE') {
+    const valEl = document.getElementById(`val-${idPrefix}`);
+    const badgeEl = document.getElementById(`badge-${idPrefix}`);
+    const barEl = document.getElementById(`bar-${idPrefix}`);
+
+    if (valEl) valEl.textContent = '--';
+    if (badgeEl) {
+      badgeEl.className = 'card-badge offline';
+      badgeEl.textContent = labelText;
+    }
+    if (barEl) {
+      barEl.style.width = '0%';
+      barEl.className = 'progress-bar';
+    }
+  }
+
+  function renderOfflineActuatorCard(idPrefix) {
+    const card = document.getElementById(`act-${idPrefix}`);
+    const pill = document.getElementById(`pill-${idPrefix}`);
+    const dutyVal = document.getElementById(`duty-val-${idPrefix}`);
+    const dutyFill = document.getElementById(`duty-fill-${idPrefix}`);
+
+    if (card) card.classList.remove('on');
+    if (pill) pill.textContent = 'OFF';
+    if (dutyVal) dutyVal.textContent = '--%';
+    if (dutyFill) dutyFill.style.width = '0%';
   }
 
   function updateCard(idPrefix, val, limits, unit) {
@@ -816,6 +1031,16 @@
 
   // Update visualisasi 15 kurva himpunan keanggotaan
   function updateMembershipDisplay(mem) {
+    if (!mem) {
+      // Jika sensor terputus / offline, bersihkan bar keanggotaan ke 0
+      const ids = [
+        'm-temp-sd', 'm-temp-d', 'm-temp-n', 'm-temp-p', 'm-temp-sp',
+        'm-hum-sk', 'm-hum-k', 'm-hum-n', 'm-hum-b', 'm-hum-sb',
+        'm-nh3-sr', 'm-nh3-r', 'm-nh3-s', 'm-nh3-t', 'm-nh3-st'
+      ];
+      ids.forEach(id => setBarVal(id, 0));
+      return;
+    }
     // Suhu (5 himpunan)
     setBarVal('m-temp-sd', mem.temp.SD);
     setBarVal('m-temp-d',  mem.temp.D);
@@ -913,9 +1138,21 @@
     const canvas = document.getElementById('history-chart-canvas');
     if (!canvas) return;
 
+    // Pasang ResizeObserver agar kanvas selalu responsif terhadap perubahan ukuran container
+    if (canvas.parentElement && window.ResizeObserver && !window._chartResizeObserved) {
+      window._chartResizeObserved = true;
+      const ro = new ResizeObserver(() => {
+        if (state.currentView === 'history') {
+          renderCanvasChart();
+        }
+      });
+      ro.observe(canvas.parentElement);
+    }
+
     const ctx = canvas.getContext('2d');
     const w = canvas.parentElement.clientWidth;
-    const h = 320;
+    const parentH = canvas.parentElement.clientHeight;
+    const h = parentH > 150 ? parentH : 380;
 
     const dpr = window.devicePixelRatio || 1;
     canvas.width = w * dpr;
@@ -927,70 +1164,145 @@
     ctx.clearRect(0, 0, w, h);
 
     const padLeft = 45;
-    const padRight = 20;
+    const padRight = 25;
     const padTop = 20;
-    const padBottom = 35;
+    const padBottom = 38;
     const chartW = w - padLeft - padRight;
     const chartH = h - padTop - padBottom;
-
-    const data = state.history;
-    if (!data || data.length === 0) {
-      ctx.fillStyle = '#8C90A0';
-      ctx.font = '12px Inter';
-      ctx.fillText('Menunggu data telemetri dari tabel telemetry...', w / 2 - 110, h / 2);
-      return;
-    }
 
     const minY = 0;
     const maxY = 100;
 
-    // Garis grid horizontal
+    const data = state.history;
+    if (!data || data.length === 0) {
+      // Gambarkan grid horizontal tetap ada
+      ctx.strokeStyle = '#EEF0F4';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.textAlign = 'right';
+
+      for (let step = 0; step <= 100; step += 25) {
+        const y = padTop + chartH - (step / maxY) * chartH;
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - padRight, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText(step.toString(), padLeft - 8, y + 3);
+      }
+
+      ctx.fillStyle = '#64748B';
+      ctx.font = '600 13px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      const rangeLabel = state.chartRange === '24h' ? '24 Jam' : (state.chartRange === '6h' ? '6 Jam' : '1 Jam');
+      ctx.fillText(`Tidak ada data sensor di database dalam rentang ${rangeLabel} terakhir.`, w / 2, h / 2 - 14);
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '12px Inter, sans-serif';
+      if (state.lastEsp32Heartbeat) {
+        const lastStr = state.lastEsp32Heartbeat.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' WIB';
+        ctx.fillText(`Sensor ESP32 Offline (Terakhir tercatat di database: ${lastStr}).`, w / 2, h / 2 + 10);
+      } else {
+        ctx.fillText('(Hardware ESP32 dalam status offline / belum ada pengiriman data)', w / 2, h / 2 + 10);
+      }
+      ctx.fillStyle = '#FF6B00';
+      ctx.font = '500 11px Inter, sans-serif';
+      ctx.fillText('💡 Klik tombol "6 Jam" atau "24 Jam" di atas untuk melihat riwayat data dari database', w / 2, h / 2 + 34);
+      return;
+    }
+
+    // 1. Garis Grid Horizontal & Skala Y (0, 25, 50, 75, 100)
     ctx.strokeStyle = '#E2E4EB';
     ctx.lineWidth = 1;
     ctx.fillStyle = '#8C90A0';
-    ctx.font = '10px JetBrains Mono';
+    ctx.font = '10px JetBrains Mono, monospace';
     ctx.textAlign = 'right';
 
     for (let step = 0; step <= 100; step += 25) {
       const y = padTop + chartH - (step / maxY) * chartH;
       ctx.beginPath();
+      ctx.setLineDash([3, 3]);
       ctx.moveTo(padLeft, y);
       ctx.lineTo(w - padRight, y);
       ctx.stroke();
+      ctx.setLineDash([]);
       ctx.fillText(step.toString(), padLeft - 8, y + 3);
     }
 
-    function drawSeries(key, color, fillRgba) {
-      if (data.length === 1) {
-        const x = padLeft + chartW / 2;
-        const val = Math.min(maxY, Math.max(minY, data[0][key]));
-        const y = padTop + chartH - (val / maxY) * chartH;
-        ctx.beginPath();
-        ctx.arc(x, y, 6, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-        ctx.strokeStyle = '#FFF';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        return;
-      }
+    // 2. Skala Sumbu X & Garis Grid Vertikal Sesuai Rentang Jam (1 Jam / 6 Jam / 24 Jam)
+    const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
+    const nowTime = Date.now();
+    const durationMs = rangeHours * 3600 * 1000;
+    const startTime = nowTime - durationMs;
 
+    // Tentukan interval pembagian jam
+    let tickCount = 4; // 1 Jam: tiap 15 menit
+    if (rangeHours === 6) tickCount = 6; // 6 Jam: tiap 1 jam
+    if (rangeHours === 24) tickCount = 6; // 24 Jam: tiap 4 jam
+
+    for (let k = 0; k <= tickCount; k++) {
+      const ratio = k / tickCount;
+      const x = padLeft + ratio * chartW;
+      const tTick = new Date(startTime + ratio * durationMs);
+
+      // Garis grid vertikal putus-putus
+      ctx.strokeStyle = '#EEF0F4';
+      ctx.lineWidth = 1;
       ctx.beginPath();
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(x, padTop);
+      ctx.lineTo(x, padTop + chartH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Label jam di bawah sumbu X
+      ctx.fillStyle = '#8C90A0';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.textAlign = k === 0 ? 'left' : (k === tickCount ? 'right' : 'center');
+
+      const timeStr = tTick.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      let label = timeStr;
+      if (rangeHours === 24) {
+        const dateStr = tTick.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+        label = k === 0 || k === tickCount ? `${dateStr} ${timeStr}` : timeStr;
+      }
+      ctx.fillText(label, x, padTop + chartH + 18);
+    }
+
+    // 3. Gambar Kurva Tiap Sensor (Kelembapan, Suhu, Amonia)
+    function drawSeries(key, color, fillRgba) {
+      const sorted = [...data].sort((a, b) => {
+        const ta = a.time instanceof Date ? a.time.getTime() : new Date(a.time).getTime();
+        const tb = b.time instanceof Date ? b.time.getTime() : new Date(b.time).getTime();
+        return ta - tb;
+      });
+
       const points = [];
-      for (let i = 0; i < data.length; i++) {
-        const x = padLeft + (i / (data.length - 1)) * chartW;
-        const val = Math.min(maxY, Math.max(minY, data[i][key]));
+      for (let i = 0; i < sorted.length; i++) {
+        const item = sorted[i];
+        if (item[key] === null || item[key] === undefined || isNaN(item[key]) || item[key] < 0) continue;
+        const itemTime = item.time instanceof Date ? item.time.getTime() : new Date(item.time).getTime();
+        if (itemTime < startTime || itemTime > nowTime) continue;
+        const tRatio = Math.max(0, Math.min(1, (itemTime - startTime) / durationMs));
+        const x = padLeft + tRatio * chartW;
+        const val = Math.min(maxY, Math.max(minY, Number(item[key])));
         const y = padTop + chartH - (val / maxY) * chartH;
         points.push({ x, y });
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
       }
 
+      if (points.length === 0) return;
+
+      ctx.beginPath();
+      for (let i = 0; i < points.length; i++) {
+        if (i === 0) ctx.moveTo(points[i].x, points[i].y);
+        else ctx.lineTo(points[i].x, points[i].y);
+      }
       ctx.strokeStyle = color;
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2.4;
       ctx.stroke();
 
-      if (fillRgba) {
+      if (fillRgba && points.length > 1) {
         ctx.lineTo(points[points.length - 1].x, padTop + chartH);
         ctx.lineTo(points[0].x, padTop + chartH);
         ctx.closePath();
@@ -998,13 +1310,14 @@
         ctx.fill();
       }
 
+      // Titik indikator lingkaran di data terkini
       const last = points[points.length - 1];
       ctx.beginPath();
-      ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+      ctx.arc(last.x, last.y, 4.5, 0, Math.PI * 2);
       ctx.fillStyle = color;
       ctx.fill();
       ctx.strokeStyle = '#FFF';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
     }
 
@@ -1012,12 +1325,204 @@
     drawSeries('suhu',       '#FF6B00', 'rgba(255, 107, 0, 0.08)');
     drawSeries('amonia',     '#10B981', 'rgba(16, 185, 129, 0.08)');
 
-    ctx.fillStyle = '#8C90A0';
-    ctx.textAlign = 'left';
-    ctx.fillText(data[0].time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), padLeft, h - 10);
-    if (data.length > 1) {
-      ctx.textAlign = 'right';
-      ctx.fillText(data[data.length - 1].time.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), w - padRight, h - 10);
+    // 4. Garis Vertikal & Titik Saat Kursor Mengarah ke Grafik (Hover)
+    if (state.hoveredChartPoint) {
+      const hPt = state.hoveredChartPoint;
+      const hTime = hPt.time instanceof Date ? hPt.time.getTime() : new Date(hPt.time).getTime();
+
+      const tRatio = Math.max(0, Math.min(1, (hTime - startTime) / durationMs));
+      const hX = padLeft + tRatio * chartW;
+
+      // Garis vertikal tipis seperti referensi (Humidity Analytics)
+      ctx.strokeStyle = '#94A3B8';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(hX, padTop);
+      ctx.lineTo(hX, padTop + chartH);
+      ctx.stroke();
+
+      // Titik lingkaran pada masing-masing kurva
+      const seriesData = [
+        { val: hPt.kelembapan, color: '#0284C7' },
+        { val: hPt.suhu,       color: '#FF6B00' },
+        { val: hPt.amonia,     color: '#10B981' }
+      ];
+
+      seriesData.forEach(s => {
+        if (s.val === null || s.val === undefined || isNaN(s.val) || s.val < 0) return;
+        const val = Math.min(maxY, Math.max(minY, Number(s.val)));
+        const y = padTop + chartH - (val / maxY) * chartH;
+
+        // Lingkaran luar halus
+        ctx.beginPath();
+        ctx.arc(hX, y, 6, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.globalAlpha = 0.25;
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+
+        // Lingkaran dalam solid dengan border putih
+        ctx.beginPath();
+        ctx.arc(hX, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+  }
+
+  function updateChartTooltip(item, mouseX, mouseY) {
+    let tooltip = document.getElementById('chart-tooltip');
+    if (!tooltip) {
+      const container = document.querySelector('#view-history .canvas-container');
+      if (container) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'chart-tooltip';
+        tooltip.className = 'chart-tooltip';
+        container.appendChild(tooltip);
+      }
+    }
+    if (!tooltip) return;
+
+    if (!item) {
+      tooltip.style.display = 'none';
+      return;
+    }
+
+    const t = item.time instanceof Date ? item.time : new Date(item.time);
+    const timeExact = t.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' WIB';
+    let titleStr = timeExact;
+    if (state.chartRange === '24h') {
+      const dateStr = t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+      titleStr = `${dateStr} • ${timeExact}`;
+    }
+
+    const tVal = (item.suhu !== null && item.suhu !== undefined && item.suhu >= 0) ? `${Number(item.suhu).toFixed(1)} °C` : '-- (Terputus)';
+    const hVal = (item.kelembapan !== null && item.kelembapan !== undefined && item.kelembapan >= 0) ? `${Number(item.kelembapan).toFixed(1)} %` : '-- (Terputus)';
+    const aVal = (item.amonia !== null && item.amonia !== undefined && item.amonia >= 0) ? `${Number(item.amonia).toFixed(1)} ppm` : '-- (Terputus)';
+
+    tooltip.innerHTML = `
+      <div class="chart-tooltip-time">${titleStr}</div>
+      <div class="chart-tooltip-row temp">
+        <span class="label">Suhu :</span>
+        <span class="val">${tVal}</span>
+      </div>
+      <div class="chart-tooltip-row humid">
+        <span class="label">Kelembapan :</span>
+        <span class="val">${hVal}</span>
+      </div>
+      <div class="chart-tooltip-row ammonia">
+        <span class="label">Gas Amonia :</span>
+        <span class="val">${aVal}</span>
+      </div>
+    `;
+
+    tooltip.style.display = 'block';
+
+    const container = tooltip.parentElement;
+    if (!container) return;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    const tw = tooltip.offsetWidth || 180;
+    const th = tooltip.offsetHeight || 105;
+
+    // Posisikan tooltip di sebelah kanan kursor, atau di kiri jika mendekati batas kanan
+    let left = mouseX + 16;
+    if (left + tw > cw - 12) {
+      left = mouseX - tw - 16;
+    }
+    if (left < 10) left = 10;
+
+    let top = (mouseY || 60) - th / 2;
+    if (top < 10) top = 10;
+    if (top + th > ch - 10) top = ch - th - 10;
+
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  }
+
+  function handleChartPointerMove(e) {
+    const canvas = document.getElementById('history-chart-canvas');
+    if (!canvas || !state.history || state.history.length === 0) return;
+
+    const rect = canvas.getBoundingClientRect();
+    let clientX = e.clientX !== undefined ? e.clientX - rect.left : 0;
+    let clientY = e.clientY !== undefined ? e.clientY - rect.top : 0;
+    if (e.touches && e.touches[0]) {
+      clientX = e.touches[0].clientX - rect.left;
+      clientY = e.touches[0].clientY - rect.top;
+    }
+
+    const w = canvas.parentElement.clientWidth;
+    const parentH = canvas.parentElement.clientHeight;
+    const h = parentH > 150 ? parentH : 380;
+    const padLeft = 45;
+    const padRight = 25;
+    const padTop = 20;
+    const padBottom = 38;
+    const chartW = w - padLeft - padRight;
+    const chartH = h - padTop - padBottom;
+
+    if (clientX < padLeft || clientX > w - padRight) {
+      if (state.hoveredChartPoint) {
+        state.hoveredChartPoint = null;
+        updateChartTooltip(null);
+        renderCanvasChart();
+      }
+      return;
+    }
+
+    const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
+    const nowTime = Date.now();
+    const durationMs = rangeHours * 3600 * 1000;
+    const startTime = nowTime - durationMs;
+
+    const ratio = Math.max(0, Math.min(1, (clientX - padLeft) / chartW));
+    const targetTime = startTime + ratio * durationMs;
+
+    // Cari titik telemetri yang terdekat dengan posisi kursor horizontal
+    let closest = null;
+    let minDiff = Infinity;
+    for (const item of state.history) {
+      const itemTime = item.time instanceof Date ? item.time.getTime() : new Date(item.time).getTime();
+      const diff = Math.abs(itemTime - targetTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = item;
+      }
+    }
+
+    if (closest) {
+      const cTime = closest.time instanceof Date ? closest.time.getTime() : new Date(closest.time).getTime();
+      const ptRatio = Math.max(0, Math.min(1, (cTime - startTime) / durationMs));
+      const ptX = padLeft + ptRatio * chartW;
+
+      // Hanya tampilkan penunjuk jika kursor dekat dengan titik data nyata (dalam radius 35px)
+      if (Math.abs(clientX - ptX) <= 35) {
+        state.hoveredChartPoint = closest;
+        renderCanvasChart();
+        updateChartTooltip(closest, ptX, clientY);
+      } else {
+        if (state.hoveredChartPoint) {
+          state.hoveredChartPoint = null;
+          updateChartTooltip(null);
+          renderCanvasChart();
+        }
+      }
+    }
+  }
+
+  function handleChartPointerLeave(e) {
+    const container = document.querySelector('#view-history .canvas-container');
+    if (e && e.relatedTarget && container && container.contains(e.relatedTarget)) {
+      return;
+    }
+    if (state.hoveredChartPoint) {
+      state.hoveredChartPoint = null;
+      updateChartTooltip(null);
+      renderCanvasChart();
     }
   }
 
@@ -1036,14 +1541,27 @@
       });
     });
 
+    // Event Kursor Mengarah ke Grafik (Hover Tooltip Persis Seperti Referensi)
+    const chartContainer = document.querySelector('#view-history .canvas-container');
+    if (chartContainer) {
+      chartContainer.addEventListener('mousemove', handleChartPointerMove);
+      chartContainer.addEventListener('click', handleChartPointerMove);
+      chartContainer.addEventListener('mouseleave', handleChartPointerLeave);
+      chartContainer.addEventListener('touchmove', handleChartPointerMove, { passive: true });
+      chartContainer.addEventListener('touchstart', handleChartPointerMove, { passive: true });
+      chartContainer.addEventListener('touchend', handleChartPointerLeave);
+    }
+
     // Tombol Filter Rentang Grafik
     const chartBtns = document.querySelectorAll('.chart-btn[data-range]');
     chartBtns.forEach(b => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', async () => {
         chartBtns.forEach(x => x.classList.remove('active'));
         b.classList.add('active');
         state.chartRange = b.getAttribute('data-range');
-        renderCanvasChart();
+        state.hoveredChartPoint = null;
+        updateChartTooltip(null);
+        await fetchChartHistory(state.chartRange);
       });
     });
 
@@ -1316,9 +1834,18 @@
       const timeStr = dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' +
                       dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-      const t = Number(item.suhu !== undefined ? item.suhu : item.temperature);
-      const h = Number(item.kelembapan !== undefined ? item.kelembapan : item.humidity);
-      const a = Number(item.amonia !== undefined ? item.amonia : item.ammonia);
+      const rawT = item.suhu !== undefined ? item.suhu : item.temperature;
+      const rawH = item.kelembapan !== undefined ? item.kelembapan : item.humidity;
+      const rawA = item.amonia !== undefined ? item.amonia : item.ammonia;
+
+      const tValid = isSensorValid(rawT, 0, 60);
+      const hValid = isSensorValid(rawH, 0, 100);
+      const aValid = isSensorValid(rawA, 0, 200);
+
+      const tStr = tValid ? `${Number(rawT).toFixed(1)} °C` : '--';
+      const hStr = hValid ? `${Number(rawH).toFixed(1)} %` : '--';
+      const aStr = aValid ? `${Number(rawA).toFixed(1)} ppm` : '--';
+
       const pwmIn = Number(item.pwm_intake || 0);
       const pwmEx = Number(item.pwm_exhaust || 0);
       const pwmHt = Number(item.pwm_pemanas || 0);
@@ -1326,10 +1853,19 @@
 
       let condText = 'Normal';
       let condClass = 'normal';
-      if (a >= THRESHOLDS.ammonia.danger || t >= THRESHOLDS.temperature.danger || t <= 14.0) {
+      if (!tValid && !hValid && !aValid) {
+        condText = 'Sensor Terputus';
+        condClass = 'offline';
+      } else if (!tValid || !hValid) {
+        condText = 'SHT31 Terputus';
+        condClass = 'warning';
+      } else if (!aValid) {
+        condText = 'MQ135 Terputus';
+        condClass = 'warning';
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= 14.0) {
         condText = 'Kritis / Bahaya';
         condClass = 'danger';
-      } else if (a >= THRESHOLDS.ammonia.warning || t >= THRESHOLDS.temperature.warning || t <= 18.0 || h >= THRESHOLDS.humidity.warning) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= 18.0 || Number(rawH) >= THRESHOLDS.humidity.warning) {
         condText = 'Waspada';
         condClass = 'warning';
       }
@@ -1338,9 +1874,9 @@
         <tr>
           <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">${index + 1}</td>
           <td style="font-family:var(--font-mono);font-size:11px;font-weight:600;">${timeStr}</td>
-          <td style="font-family:var(--font-mono);font-weight:700;color:#FF6B00;">${t.toFixed(1)} °C</td>
-          <td style="font-family:var(--font-mono);font-weight:700;color:#0284C7;">${h.toFixed(1)} %</td>
-          <td style="font-family:var(--font-mono);font-weight:700;color:#10B981;">${a.toFixed(1)} ppm</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:${tValid ? '#FF6B00' : 'var(--text-muted)'};">${tStr}</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:${hValid ? '#0284C7' : 'var(--text-muted)'};">${hStr}</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:${aValid ? '#10B981' : 'var(--text-muted)'};">${aStr}</td>
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmIn}%</td>
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmEx}%</td>
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmHt}%</td>
@@ -1360,18 +1896,33 @@
     let csv = 'No,Waktu,Suhu_C,Kelembapan_RH,Amonia_PPM,PWM_Intake,PWM_Exhaust,PWM_Pemanas,Status_Konveyor,Status_Kondisi\r\n';
     currentLogs.forEach((item, idx) => {
       const dt = new Date(item.created_at).toLocaleString('id-ID');
-      const t = Number(item.suhu !== undefined ? item.suhu : item.temperature).toFixed(1);
-      const h = Number(item.kelembapan !== undefined ? item.kelembapan : item.humidity).toFixed(1);
-      const a = Number(item.amonia !== undefined ? item.amonia : item.ammonia).toFixed(1);
+      const rawT = item.suhu !== undefined ? item.suhu : item.temperature;
+      const rawH = item.kelembapan !== undefined ? item.kelembapan : item.humidity;
+      const rawA = item.amonia !== undefined ? item.amonia : item.ammonia;
+
+      const tValid = isSensorValid(rawT, 0, 60);
+      const hValid = isSensorValid(rawH, 0, 100);
+      const aValid = isSensorValid(rawA, 0, 200);
+
+      const t = tValid ? Number(rawT).toFixed(1) : '--';
+      const h = hValid ? Number(rawH).toFixed(1) : '--';
+      const a = aValid ? Number(rawA).toFixed(1) : '--';
+
       const pwmIn = Number(item.pwm_intake || 0);
       const pwmEx = Number(item.pwm_exhaust || 0);
       const pwmHt = Number(item.pwm_pemanas || 0);
       const cnv = Boolean(item.status_konveyor) ? 'ON' : 'OFF';
 
       let condText = 'Normal';
-      if (Number(a) >= THRESHOLDS.ammonia.danger || Number(t) >= THRESHOLDS.temperature.danger || Number(t) <= 14.0) {
+      if (!tValid && !hValid && !aValid) {
+        condText = 'Sensor Terputus';
+      } else if (!tValid || !hValid) {
+        condText = 'SHT31 Terputus';
+      } else if (!aValid) {
+        condText = 'MQ135 Terputus';
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= 14.0) {
         condText = 'Kritis/Bahaya';
-      } else if (Number(a) >= THRESHOLDS.ammonia.warning || Number(t) >= THRESHOLDS.temperature.warning || Number(t) <= 18.0 || Number(h) >= THRESHOLDS.humidity.warning) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= 18.0 || Number(rawH) >= THRESHOLDS.humidity.warning) {
         condText = 'Waspada';
       }
 
@@ -1407,8 +1958,13 @@
     });
 
     if (viewName === 'history') {
-      setTimeout(renderCanvasChart, 50);
-    } else if (viewName === 'logs') {
+      fetchChartHistory(state.chartRange);
+    } else {
+      state.hoveredChartPoint = null;
+      updateChartTooltip(null);
+    }
+
+    if (viewName === 'logs') {
       const inputS = document.getElementById('log-date-start');
       const inputE = document.getElementById('log-date-end');
       const today = new Date().toISOString().slice(0, 10);
@@ -1427,10 +1983,9 @@
       setConnectionStatus(null, 'Database: Menghubungkan...', 'Memeriksa tabel telemetry Supabase...');
       initSupabaseClient().then(success => {
         if (!success) {
-          state.timerId = setInterval(tickDemoData, 3000);
-          tickDemoData();
-        } else {
-          // Polling sinkronisasi database berkala setiap 5 detik ke tabel 'telemetry'
+          console.warn('Inisialisasi Supabase belum berhasil, menunggu koneksi...');
+        }
+        // Polling sinkronisasi database berkala setiap 5 detik ke tabel 'telemetry'
           state.timerId = setInterval(async () => {
             if (state.connectionMode === 'supabase' && state.supabaseClient) {
               try {
@@ -1453,7 +2008,6 @@
               }
             }
           }, 5000);
-        }
       });
     } else if (state.connectionMode === 'esp32') {
       setConnectionStatus(null, 'ESP32: Menghubungkan...', 'Direct IP');
@@ -1470,10 +2024,8 @@
   // 8. INITIALIZATION
   // ════════════════════════════════════════════════════════════════
   function init() {
-    initMockHistory();
     initEvents();
-
-    tickDemoData();
+    renderUI();
     restartPolling();
 
     // Watchdog status koneksi ESP32 tiap 1 detik

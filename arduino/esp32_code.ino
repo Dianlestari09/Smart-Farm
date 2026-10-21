@@ -138,7 +138,7 @@ void setup() {
     Serial.println("[OK] Sensor SHT31 terhubung pada bus I2C (SDA 21, SCL 22).");
   } else {
     sht31Available = false;
-    Serial.println("[WARN] Sensor SHT31 tidak terdeteksi! Mode simulasi nilai aktif jika sensor dilepas.");
+    Serial.println("[WARN] Sensor SHT31 tidak terdeteksi! Menunggu sensor dipasang pada bus I2C (SDA 21, SCL 22).");
   }
 
   // 3. Hubungkan ke Jaringan WiFi
@@ -157,44 +157,80 @@ void loop() {
   if (currentMillis - lastSendTime >= SEND_INTERVAL) {
     lastSendTime = currentMillis;
 
-    // 1. Baca Sensor Suhu & Kelembapan (SHT31)
-    float suhu = 24.5f;
-    float kelembapan = 68.0f;
-
-    if (sht31Available) {
-      float t = sht31.readTemperature();
-      float h = sht31.readHumidity();
-      if (!isnan(t) && !isnan(h)) {
-        suhu = t;
-        kelembapan = h;
-      } else {
-        Serial.println("[WARN] Gagal membaca data dari SHT31.");
+    // 1. Periksa ketersediaan Sensor Suhu & Kelembapan (SHT31)
+    if (!sht31Available) {
+      // Coba re-deteksi I2C jika sensor baru saja dipasang
+      if (sht31.begin(0x44) || sht31.begin(0x45)) {
+        sht31Available = true;
+        Serial.println("[OK] Sensor SHT31 berhasil terdeteksi!");
       }
-    } else {
-      // Fluktuasi demo jika sensor belum terpasang
-      suhu = 24.0f + sin(millis() / 20000.0f) * 4.0f;
-      kelembapan = 65.0f + cos(millis() / 25000.0f) * 10.0f;
     }
+
+    float t = NAN;
+    float h = NAN;
+    if (sht31Available) {
+      t = sht31.readTemperature();
+      h = sht31.readHumidity();
+      if (isnan(t) || isnan(h)) {
+        Serial.println("[WARN] Pembacaan SHT31 gagal / kabel terlepas.");
+        sht31Available = false;
+      }
+    }
+
+    bool shtValid = sht31Available && !isnan(t) && !isnan(h);
+    float suhu = shtValid ? t : -999.0f;
+    float kelembapan = shtValid ? h : -999.0f;
 
     // 2. Baca Sensor Gas Amonia (MQ-135 ADC GPIO 34)
     float amonia = readAmmonia();
+    bool mqValid = (amonia >= 0.0f);
 
-    Serial.printf("\n[SENSOR] Suhu: %.1f °C | Kelembapan: %.1f %%RH | Amonia: %.1f ppm\n",
-                  suhu, kelembapan, amonia);
+    // Cetak status sensor ke Serial Monitor
+    if (shtValid) {
+      Serial.printf("\n[SENSOR] Suhu: %.1f °C | Kelembapan: %.1f %%RH | ", suhu, kelembapan);
+    } else {
+      Serial.print("\n[SENSOR] SHT31: [TIDAK TERHUBUNG] | ");
+    }
+    if (mqValid) {
+      Serial.printf("Amonia: %.1f ppm\n", amonia);
+    } else {
+      Serial.println("MQ-135: [TIDAK TERHUBUNG]");
+    }
 
-    // 3. Jalankan Algoritma Fuzzy Mamdani 125 Rule Base
-    FuzzyResult fuzzy = runMamdani125(suhu, kelembapan, amonia);
+    // 3. Kontrol Aktuator & Fuzzy Mamdani
+    FuzzyResult fuzzy;
+    if (shtValid && mqValid) {
+      // Semua sensor terpasang: Jalankan Algoritma Fuzzy Mamdani 125 Rule Base
+      fuzzy = runMamdani125(suhu, kelembapan, amonia);
+      applyActuators(fuzzy.pwm_intake, fuzzy.pwm_exhaust, fuzzy.pwm_pemanas, fuzzy.status_konveyor);
 
-    // 4. Kendalikan Aktuator Fisik (PWM MOSFET & Relai Konveyor)
-    applyActuators(fuzzy.pwm_intake, fuzzy.pwm_exhaust, fuzzy.pwm_pemanas, fuzzy.status_konveyor);
+      Serial.printf("[FLC MAMDANI] Kondisi: %s\n", fuzzy.condition_label.c_str());
+      Serial.printf("  * Kipas Intake  : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_intake, fuzzy.pwm_intake);
+      Serial.printf("  * Kipas Exhaust : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_exhaust, fuzzy.pwm_exhaust);
+      Serial.printf("  * Lampu Pemanas : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_pemanas, fuzzy.pwm_pemanas);
+      Serial.printf("  * Motor Konveyor: %s (Relai GPIO 27)\n", fuzzy.status_konveyor ? "ON (AKTIF)" : "OFF (MATI)");
+    } else {
+      // Jika salah satu atau kedua sensor tidak terpasang, matikan aktuator demi keselamatan ternak
+      applyActuators(0, 0, 0, false);
+      fuzzy.pwm_intake = 0;
+      fuzzy.pwm_exhaust = 0;
+      fuzzy.pwm_pemanas = 0;
+      fuzzy.status_konveyor = false;
+      fuzzy.y_star_intake = 0;
+      fuzzy.y_star_exhaust = 0;
+      fuzzy.y_star_pemanas = 0;
+      if (!shtValid && !mqValid) {
+        fuzzy.condition_label = "Semua Sensor Terputus";
+      } else if (!shtValid) {
+        fuzzy.condition_label = "Sensor SHT31 Terputus";
+      } else {
+        fuzzy.condition_label = "Sensor MQ-135 Terputus";
+      }
+      Serial.printf("[STATUS] %s -> Aktuator dimatikan (Safety Mode).\n", fuzzy.condition_label.c_str());
+    }
 
-    Serial.printf("[FLC MAMDANI] Kondisi: %s\n", fuzzy.condition_label.c_str());
-    Serial.printf("  * Kipas Intake  : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_intake, fuzzy.pwm_intake);
-    Serial.printf("  * Kipas Exhaust : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_exhaust, fuzzy.pwm_exhaust);
-    Serial.printf("  * Lampu Pemanas : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_pemanas, fuzzy.pwm_pemanas);
-    Serial.printf("  * Motor Konveyor: %s (Relai GPIO 27)\n", fuzzy.status_konveyor ? "ON (AKTIF)" : "OFF (MATI)");
-
-    // 5. Kirim Telemetri ke Supabase Cloud (Tabel Tunggal: 'telemetry')
+    // 4. TETAP KIRIM TELEMETRI KE SUPABASE CLOUD
+    // ESP32 tetap Online di Dashboard. Nilai -999.0f menandakan sensor tidak terpasang (tanpa dummy).
     sendTelemetryToSupabase(suhu, kelembapan, amonia, fuzzy);
   }
 }
@@ -230,9 +266,14 @@ float calcTrap(float x, float a, float b, float c, float d) {
 
 // ══════════════════════════════════════════════════════════════
 // BACA SENSOR AMONIA MQ-135 (GPIO 34 ADC)
+// Mengembalikan -999.0f jika sensor MQ-135 belum terpasang (rawADC <= 10)
 // ══════════════════════════════════════════════════════════════
 float readAmmonia() {
   int rawADC = analogRead(PIN_MQ135);
+  // Jika rawADC <= 10 (tegangan < 0.01V, pin terbuka / sensor belum terpasang)
+  if (rawADC <= 10) {
+    return -999.0f;
+  }
   // Konversi rentang ADC ESP32 (0 - 4095) ke konsentrasi PPM (0 - 50 ppm)
   float ppm = ((float)rawADC / 4095.0f) * 50.0f;
   if (ppm < 0.0f) ppm = 0.0f;

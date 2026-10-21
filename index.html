@@ -654,6 +654,7 @@
 
           <div class="canvas-container">
             <canvas id="history-chart-canvas"></canvas>
+            <div id="chart-tooltip" class="chart-tooltip" style="display:none;"></div>
           </div>
         </div>
       </section>
@@ -705,8 +706,16 @@
         </div>
 
         <!-- Log Table Card -->
-        <div class="fuzzy-overview-card" style="padding:18px;">
-          <div class="rules-table-container">
+        <div class="fuzzy-overview-card log-table-card" style="padding:18px;">
+          <div class="log-table-header-info" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+            <div style="font-size:13px;font-weight:700;color:var(--text-main);display:flex;align-items:center;gap:6px;">
+              <span>📊 Data Riwayat Telemetri</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px;">
+              <span>↕️ Gulir ke bawah untuk melihat data lainnya</span>
+            </div>
+          </div>
+          <div class="rules-table-container log-table-container">
             <table class="rules-table" style="min-width:850px;">
               <thead>
                 <tr>
@@ -753,7 +762,7 @@
             </h3>
             <div class="info-table-row">
               <span class="info-label">Judul Penelitian</span>
-              <span class="info-val" style="font-size:11px;max-width:200px;text-align:right;">Rancang Bangun Sistem
+              <span class="info-val" style="font-size:11.5px;max-width:340px;text-align:right;line-height:1.4;">Rancang Bangun Sistem
                 Otomatisasi Mikroklimat Kandang Ayam Petelur Berbasis Fuzzy Logic Controller</span>
             </div>
             <div class="info-table-row">
@@ -765,8 +774,16 @@
               <span class="info-val">230605110016</span>
             </div>
             <div class="info-table-row">
+              <span class="info-label">Program Studi</span>
+              <span class="info-val">Teknik Informatika</span>
+            </div>
+            <div class="info-table-row">
               <span class="info-label">Subjek Penelitian</span>
               <span class="info-val">Kandang Ayam Petelur (Layer)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Platform Dashboard</span>
+              <span class="info-val" style="font-size:11px;">Web Native (HTML5 / CSS / JS)</span>
             </div>
           </div>
 
@@ -854,6 +871,10 @@
             <div class="info-table-row">
               <span class="info-label">Scaling PWM</span>
               <span class="info-val" style="font-size:11px;">Persamaan 3.2 (8.3 - 91.7)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Siklus Kontrol Aktuator</span>
+              <span class="info-val" style="color:var(--success);">Real-time Telemetri</span>
             </div>
           </div>
         </div>
@@ -945,8 +966,8 @@
   </div>
 
   <!-- Konfigurasi Supabase & Script Aplikasi Native -->
-  <script src="config.js"></script>
-  <script src="app.js?v=2.0"></script>
+  <script src="config.js?v=3.4"></script>
+  <script src="app.js?v=3.4"></script>
 </body>
 
 </html>
