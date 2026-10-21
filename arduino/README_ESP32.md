@@ -1,75 +1,54 @@
-# Panduan Web Monitor Native (HTML/CSS/JS) untuk ESP32 & Offline Kandang
+# Panduan Firmware ESP32 & Web Monitor — Smart Farm Poultry
 
 Sistem ini dibuat khusus untuk penelitian Skripsi:
-**"Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur"**
-Oleh: **Dian Lestari Kurniawati** (NIM: **230605110016**)
+**"Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur Berbasis Fuzzy Logic Controller"**  
+Peneliti: **Dian Lestari Kurniawati** (NIM: **230605110016**)
 
 ---
 
-## 📁 Struktur Berkas Native
+## 📌 1. Konfigurasi Pin Hardware ESP32 (Sesuai Gambar 3.5 Proposal)
 
-Semua berkas berada di folder `native-esp32-web/`:
-```text
-native-esp32-web/
-├── index.html               # Halaman utama dashboard (Semantik HTML5)
-├── style.css                # Tampilan modern, industrial, responsif mobile
-├── app.js                   # Mesin FLC 27 Rule Mamdani + Canvas Chart + REST Poller
-├── esp32_with_webserver.ino # Kode Arduino ESP32 (LittleFS Web Server + Supabase)
-└── README_ESP32.md          # Panduan ini
-```
-
----
-
-## 🚀 1. Cara Menjalankan Langsung di Komputer (Tanpa Node.js / Tanpa Install)
-
-1. Cukup buka folder [native-esp32-web](file:///d:/Kuliah/SKRIPSI%20DIAN/Skripsi%20Smart%20Farm%20Poultry/WebApps/smart-farm-monitor/native-esp32-web).
-2. Klik ganda file [index.html](file:///d:/Kuliah/SKRIPSI%20DIAN/Skripsi%20Smart%20Farm%20Poultry/WebApps/smart-farm-monitor/native-esp32-web/index.html) menggunakan browser apa saja (Chrome, Edge, Firefox).
-3. **Selesai!** Dashboard langsung aktif dengan **Mode Simulasi (Demo)**:
-   - Data sensor berfluktuasi otomatis secara realistis.
-   - 27 Rule Base Fuzzy Mamdani langsung bekerja dan menghitung persentase aktuator.
-   - Grafik riwayat sensor digambar murni menggunakan HTML5 Canvas (100% offline tanpa perlu koneksi internet).
+| Perangkat / Modul | Tipe Antarmuka | Pin ESP32 | Keterangan |
+|---|---|---|---|
+| **Sensor SHT31** | I2C Hardware | SDA: **GPIO 21**, SCL: **GPIO 22** | Suhu (°C) & Kelembapan (%RH) |
+| **Sensor MQ-135** | ADC Analog | **GPIO 34** | Deteksi Gas Amonia (0–50 ppm) |
+| **Kipas Intake** | MOSFET PWM | **GPIO 16** (LEDC CH 0) | Pasokan Udara Segar (0–100%) |
+| **Kipas Exhaust** | MOSFET PWM | **GPIO 17** (LEDC CH 1) | Pembuangan Udara Panas/Amonia |
+| **Lampu Pemanas** | MOSFET PWM | **GPIO 23** (LEDC CH 2) | Pemanas Kalor Kandang (0–100%) |
+| **Motor Konveyor** | Relai Biner 1-CH | **GPIO 27** | Pembersih Kotoran Otomatis (ON/OFF) |
 
 ---
 
-## 📶 2. Cara Mengunggah ke Memori Flash ESP32 (LittleFS)
+## 🗄️ 2. Skema Database Supabase (Tabel Tunggal: 'telemetry')
 
-Agar dashboard web ini bisa dibuka langsung dari ESP32 di area kandang:
-
-### Langkah A: Siapkan Folder Data di Arduino
-1. Buat folder bernama `data` di dalam folder sketch Arduino Anda.
-2. Salin 3 berkas berikut ke dalam folder `data`:
-   - `index.html`
-   - `style.css`
-   - `app.js`
-
-### Langkah B: Upload ke Flash ESP32
-1. Di Arduino IDE, pastikan plugin **ESP32 LittleFS Data Upload** sudah terpasang (Tools > ESP32 LittleFS Data Upload).
-2. Tancapkan kabel USB ESP32 ke laptop.
-3. Klik **Tools > ESP32 LittleFS Data Upload**.
-4. Tunggu hingga proses upload partisi flash selesai.
-5. Upload kode Arduino [esp32_with_webserver.ino](file:///d:/Kuliah/SKRIPSI%20DIAN/Skripsi%20Smart%20Farm%20Poultry/WebApps/smart-farm-monitor/native-esp32-web/esp32_with_webserver.ino) seperti biasa.
+Sesuai **Tabel 3.5 Proposal Skripsi**, database hanya menggunakan 1 tabel:
+- `id` (BIGINT, Primary Key, Auto Increment)
+- `created_at` (TIMESTAMPTZ, default now())
+- `suhu` (REAL, °C)
+- `kelembapan` (REAL, %RH)
+- `amonia` (REAL, ppm)
+- `pwm_intake` (INT2, 0–100)
+- `pwm_exhaust` (INT2, 0–100)
+- `pwm_pemanas` (INT2, 0–100)
+- `status_konveyor` (BOOLEAN, true=ON/false=OFF)
 
 ---
 
-## 📱 3. Cara Mengakses di Kandang Ayam (Tanpa Kuota / Tanpa Internet)
+## 🧠 3. Logika Fuzzy Mamdani (125 Rule Base)
 
-1. Nyalakan alat ESP32 di kandang ayam.
-2. Ambil HP / Smartphone peternak, lalu buka pengaturan WiFi.
-3. Hubungkan HP ke WiFi Access Point:
-   - **SSID:** `SmartFarm-Kandang`
-   - **Password:** `12345678`
-4. Buka browser HP (Chrome / Safari), ketik alamat:
-   ```text
-   http://192.168.4.1
-   ```
-5. Dashboard lengkap akan terbuka secara instan! Peternak dapat melihat kondisi suhu, kelembapan, kadar amonia, serta menyalakan/mematikan kipas & heater secara manual melalui tombol override.
+1. **Fuzzifikasi 5 Himpunan Keanggotaan:**
+   - **Suhu (10–40 °C):** Sangat Dingin (SD), Dingin (D), Normal (N), Panas (P), Sangat Panas (SP)
+   - **Kelembapan (20–100 %RH):** Sangat Kering (SK), Kering (K), Normal (N), Basah (B), Sangat Basah (SB)
+   - **Gas Amonia (0–50 ppm):** Sangat Aman (SR), Aman (R), Waspada (S), Bahaya (T), Sangat Bahaya (ST)
+2. **Defuzzifikasi Centroid COA & Scaling PWM (Persamaan 3.1 & 3.2):**
+   $$y^* = \frac{\int_0^{100} y \cdot \mu(y) \, dy}{\int_0^{100} \mu(y) \, dy}$$
+   $$y_{\text{pwm}} = \text{clamp}\left( \frac{y^* - 8.3}{91.7 - 8.3} \times 100, 0, 100 \right)$$
+3. **Pemicu Relai Motor Konveyor (GPIO 27):**
+   Aktif (true / HIGH) jika Amonia $\ge$ 20 ppm ATAU Kelembapan > 90%, selain itu OFF.
 
 ---
 
-## 🎛️ 4. Fitur Simulasi untuk Sidang Skripsi
+## 🚀 4. Berkas Sketch Arduino
 
-Pada tab **Fuzzy Mamdani**:
-- Tersedia **3 Slider Pengujian** (Suhu 10–40°C, Kelembapan 30–100%, Amonia 0–50 ppm).
-- Dosen penguji dapat menggeser nilai slider untuk membuktikan bahwa **27 Rule Base Mamdani** merespon dengan benar sesuai naskah skripsi:
-  - Misal Suhu Panas (>28°C) + Amonia Bahaya (>25 ppm) -> Kipas Intake, Kipas Exhaust, dan Konveyor otomatis menyala (ON).
-  - Misal Suhu Dingin (<18°C) -> Lampu Pemanas (Heater) otomatis menyala.
+- [esp32_code.ino](file:///d:/Kuliah/SKRIPSI%20DIAN/Skripsi%20Smart%20Farm%20Poultry/WebApps/smart-farm-monitor/arduino/esp32_code.ino): Kode baku mikrokontroler mandiri dengan koneksi langsung ke Supabase Cloud REST API.
+- [esp32_with_webserver.ino](file:///d:/Kuliah/SKRIPSI%20DIAN/Skripsi%20Smart%20Farm%20Poultry/WebApps/smart-farm-monitor/arduino/esp32_with_webserver.ino): Kode ESP32 dengan Web Server LittleFS port 80 dan Access Point offline kandang `SmartFarm-Kandang` (IP: `192.168.4.1`).

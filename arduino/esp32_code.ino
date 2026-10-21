@@ -1,148 +1,219 @@
 /*
- * ESP32 Arduino Code — SmartFarm Poultry Monitor
- * Implementasi Fuzzy Logic Controller (FLC) Metode Mamdani (27 Rule Base)
- * Sesuai dengan Skripsi: "Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur"
- * Oleh: Dian Lestari Kurniawati (NIM: 230605110016)
+ * ══════════════════════════════════════════════════════════════════════════════
+ * ESP32 FIRMWARE — SMART FARM POULTRY MONITOR
+ * Skripsi: "Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur
+ *           Berbasis Fuzzy Logic Controller"
+ * Peneliti: Dian Lestari Kurniawati (NIM: 230605110016)
  *
- * Library yang dibutuhkan:
- * - WiFi (built-in ESP32)
- * - HTTPClient (built-in ESP32)
- * - ArduinoJson (install via Library Manager)
- * - DHT sensor library (install via Library Manager)
+ * Spesifikasi Baku Proposal Skripsi (Bab III):
+ * 1. Database Supabase Tabel Tunggal: 'telemetry' (Tabel 3.5 Proposal)
+ * 2. Algoritma FLC Mamdani 125 Rule Base (5 Suhu x 5 Kelembapan x 5 Amonia)
+ * 3. Defuzzifikasi Centroid COA Domain [0..100] & Scaling PWM (Persamaan 3.1 & 3.2)
+ * 4. Pin Hardware ESP32 Sesuai Gambar 3.5 Proposal:
+ *    - GPIO 16 : Kipas Intake (MOSFET PWM)
+ *    - GPIO 17 : Kipas Exhaust (MOSFET PWM)
+ *    - GPIO 23 : Lampu Pemanas (MOSFET PWM)
+ *    - GPIO 27 : Relai 1-Kanal Motor Konveyor (Digital HIGH/LOW)
+ *    - Sensor SHT31 : Bus I2C ESP32 (SDA GPIO 21, SCL GPIO 22)
+ *    - Sensor MQ-135: GPIO 34 (ADC Analog)
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * Library yang dibutuhkan (Install via Arduino Library Manager):
+ * - ArduinoJson (v6.x) by Benoit Blanchon
+ * - Adafruit SHT31 Library by Adafruit
+ * - Wire, WiFi, HTTPClient (Bawaan ESP32 Arduino Core)
  */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_SHT31.h>
 
-// ─── WiFi Config ─────────────────────────────────
+// ─── 1. KONFIGURASI WIFI & SUPABASE ──────────────────────────
 const char* WIFI_SSID     = "SSID_WIFI_ANDA";
 const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
 
-// ─── Supabase Config ──────────────────────────────
 const char* SUPABASE_URL  = "https://jkgqmshsjngppsibwwyf.supabase.co";
 const char* SUPABASE_KEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprZ3Ftc2hzam5ncHBzaWJ3d3lmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNjQ5MzMsImV4cCI6MjEwNzc0MDkzM30.XzjuidtnuIyf2eldLsm0CHHB_AL7OOoVdRbEMuOD48g";
-const char* DEVICE_ID     = "ESP32-01";
 
-// ─── Sensor Config ───────────────────────────────
-#define DHT_PIN    4      // GPIO pin SHT31 / DHT22
-#define DHT_TYPE   DHT22  
-#define MQ135_PIN  34     // GPIO ADC untuk sensor amonia MQ135
+// ─── 2. PIN HARDWARE ESP32 (SESUAI GAMBAR 3.5 PROPOSAL) ─────
+#define PIN_FAN_INTAKE   16  // Kipas Intake (MOSFET PWM)
+#define PIN_FAN_EXHAUST  17  // Kipas Exhaust (MOSFET PWM)
+#define PIN_HEATER       23  // Lampu Pemanas (MOSFET PWM)
+#define PIN_CONVEYOR     27  // Relai 1-Kanal Motor Konveyor (Digital HIGH/LOW)
+#define PIN_MQ135        34  // Sensor Gas Amonia MQ-135 (ADC Analog GPIO 34)
 
-DHT dht(DHT_PIN, DHT_TYPE);
+// Kanal & Parameter PWM LEDC ESP32 (Frekuensi 5 kHz, Resolusi 8-bit: 0 - 255)
+const int PWM_FREQ        = 5000;
+const int PWM_RESOLUTION  = 8;
+const int CH_FAN_INTAKE   = 0;
+const int CH_FAN_EXHAUST  = 1;
+const int CH_HEATER       = 2;
 
-// ─── Aktuator Pin (Relay Active LOW/HIGH) ────────
-#define PIN_FAN_INTAKE  25 // Kipas Intake
-#define PIN_FAN_EXHAUST 27 // Kipas Exhaust
-#define PIN_HEATER      26 // Lampu Pemanas
-#define PIN_CONVEYOR    14 // Motor Konveyor Pembersih Kotoran
+// Kompatibilitas ESP32 Arduino Core v2.x dan v3.x (Menghindari error 'ledcSetup' was not declared)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  #define INIT_PWM(pin, ch)        ledcAttach(pin, PWM_FREQ, PWM_RESOLUTION)
+  #define WRITE_PWM(pin, ch, duty) ledcWrite(pin, duty)
+#else
+  #define INIT_PWM(pin, ch)        do { ledcSetup(ch, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(pin, ch); } while(0)
+  #define WRITE_PWM(pin, ch, duty) ledcWrite(ch, duty)
+#endif
 
-// ─── Interval pengiriman data (ms) ───────────────
-const unsigned long SEND_INTERVAL = 5000; // 5 detik
+// Interval pengiriman telemetri ke database Supabase (3000 ms = 3 detik)
+const unsigned long SEND_INTERVAL = 3000;
 unsigned long lastSendTime = 0;
 
-// ─── Struct Data Rule & Output Fuzzy ────────────
-struct ActiveRule {
-  int rule_id;
-  String antecedent;
-  String consequent;
-  float firing_strength; // alpha (μ)
+// Objek Sensor SHT31 (I2C SDA=21, SCL=22)
+Adafruit_SHT31 sht31 = Adafruit_SHT31();
+bool sht31Available = false;
+
+// ─── 3. STRUKTUR DATA FLC MAMDANI ───────────────────────────
+struct RuleOutputTerms {
+  uint8_t inTerm; // 0=Mati, 1=Rendah, 2=Sedang, 3=Tinggi, 4=Maksimal
+  uint8_t exTerm;
+  uint8_t htTerm;
 };
 
-struct FuzzyOutput {
-  float membership_temp[3];   // Dingin, Normal, Panas
-  float membership_humid[3];  // Kering, Normal, Basah
-  float membership_ammonia[3];// Aman, Waspada, Bahaya
-  
-  ActiveRule active_rules[27];
-  int active_rule_count;
+struct CentroidResult {
+  float y_star;
+  int pwm;
+};
 
-  // Crisp output (0 - 100%)
-  float fan_intake_pct;
-  float fan_exhaust_pct;
-  float heater_pct;
-  float conveyor_pct;
-
-  // Digital relay state (HIGH / LOW)
-  bool fan_intake_state;
-  bool fan_exhaust_state;
-  bool heater_state;
-  bool conveyor_state;
-
+struct FuzzyResult {
+  float y_star_intake;
+  float y_star_exhaust;
+  float y_star_pemanas;
+  int pwm_intake;
+  int pwm_exhaust;
+  int pwm_pemanas;
+  bool status_konveyor;
   String condition_label;
 };
 
-// Function prototypes
+// Prototipe Fungsi
+float calcLeftShoulder(float x, float a, float b);
+float calcRightShoulder(float x, float a, float b);
 float calcTri(float x, float a, float b, float c);
 float calcTrap(float x, float a, float b, float c, float d);
-FuzzyOutput runMamdaniFuzzy(float temp, float humid, float ammonia);
+RuleOutputTerms getRuleOutput(int t, int h, int a);
+CentroidResult defuzzifyCentroid(const float betas[5]);
+FuzzyResult runMamdani125(float temp, float humid, float nh3);
 float readAmmonia();
-void controlActuators(const FuzzyOutput& fuzzy);
-void sendSensorData(float temp, float humid, float ammonia);
-void sendActuatorStatus(const FuzzyOutput& fuzzy);
-void sendFuzzyResult(float temp, float humid, float ammonia, const FuzzyOutput& fuzzy);
+void applyActuators(int pwm_in, int pwm_ex, int pwm_ht, bool conveyor_on);
+void sendTelemetryToSupabase(float suhu, float humid, float nh3, const FuzzyResult& f);
 void connectWiFi();
 
-// ═══════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// SETUP
+// ══════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
+  delay(1000);
 
-  // Init pins aktuator
-  pinMode(PIN_FAN_INTAKE,  OUTPUT);
-  pinMode(PIN_FAN_EXHAUST, OUTPUT);
-  pinMode(PIN_HEATER,      OUTPUT);
-  pinMode(PIN_CONVEYOR,    OUTPUT);
+  Serial.println("\n\n========================================================");
+  Serial.println("  SMART FARM POULTRY MONITOR — ESP32 FL MAMDANI");
+  Serial.println("  Skripsi: Dian Lestari Kurniawati (NIM: 230605110016)");
+  Serial.println("========================================================");
 
-  digitalWrite(PIN_FAN_INTAKE,  LOW);
-  digitalWrite(PIN_FAN_EXHAUST, LOW);
-  digitalWrite(PIN_HEATER,      LOW);
-  digitalWrite(PIN_CONVEYOR,    LOW);
+  // 1. Inisialisasi Pin & Kanal PWM LEDC ESP32 (Mendukung Core v2 & v3)
+  INIT_PWM(PIN_FAN_INTAKE, CH_FAN_INTAKE);
+  INIT_PWM(PIN_FAN_EXHAUST, CH_FAN_EXHAUST);
+  INIT_PWM(PIN_HEATER, CH_HEATER);
 
-  // Init sensor
-  dht.begin();
+  // Inisialisasi Pin Relai Motor Konveyor (Digital Output)
+  pinMode(PIN_CONVEYOR, OUTPUT);
+  digitalWrite(PIN_CONVEYOR, LOW);
 
-  // Connect WiFi
+  // Output awal aktuator mati (0% duty cycle)
+  applyActuators(0, 0, 0, false);
+
+  // Inisialisasi Pin ADC MQ-135
+  pinMode(PIN_MQ135, INPUT);
+
+  // 2. Inisialisasi Bus I2C & Sensor SHT31
+  Wire.begin(21, 22);
+  if (sht31.begin(0x44) || sht31.begin(0x45)) {
+    sht31Available = true;
+    Serial.println("[OK] Sensor SHT31 terhubung pada bus I2C (SDA 21, SCL 22).");
+  } else {
+    sht31Available = false;
+    Serial.println("[WARN] Sensor SHT31 tidak terdeteksi! Mode simulasi nilai aktif jika sensor dilepas.");
+  }
+
+  // 3. Hubungkan ke Jaringan WiFi
   connectWiFi();
 }
 
+// ══════════════════════════════════════════════════════════════
+// LOOP UTAMA
+// ══════════════════════════════════════════════════════════════
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
 
-  if (millis() - lastSendTime >= SEND_INTERVAL) {
-    lastSendTime = millis();
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastSendTime >= SEND_INTERVAL) {
+    lastSendTime = currentMillis;
 
-    // Baca sensor
-    float temperature = dht.readTemperature();
-    float humidity    = dht.readHumidity();
-    float ammonia     = readAmmonia();
+    // 1. Baca Sensor Suhu & Kelembapan (SHT31)
+    float suhu = 24.5f;
+    float kelembapan = 68.0f;
 
-    if (isnan(temperature) || isnan(humidity)) {
-      Serial.println("[ERROR] Gagal membaca sensor!");
-      return;
+    if (sht31Available) {
+      float t = sht31.readTemperature();
+      float h = sht31.readHumidity();
+      if (!isnan(t) && !isnan(h)) {
+        suhu = t;
+        kelembapan = h;
+      } else {
+        Serial.println("[WARN] Gagal membaca data dari SHT31.");
+      }
+    } else {
+      // Fluktuasi demo jika sensor belum terpasang
+      suhu = 24.0f + sin(millis() / 20000.0f) * 4.0f;
+      kelembapan = 65.0f + cos(millis() / 25000.0f) * 10.0f;
     }
 
-    Serial.printf("\n[SENSOR REALTIME] Suhu=%.1f°C | Kelembapan=%.1f%% | Amonia=%.1f ppm\n",
-                  temperature, humidity, ammonia);
+    // 2. Baca Sensor Gas Amonia (MQ-135 ADC GPIO 34)
+    float amonia = readAmmonia();
 
-    // 1. Jalankan FLC Mamdani (27 Rule Base Skripsi)
-    FuzzyOutput fuzzyOut = runMamdaniFuzzy(temperature, humidity, ammonia);
+    Serial.printf("\n[SENSOR] Suhu: %.1f °C | Kelembapan: %.1f %%RH | Amonia: %.1f ppm\n",
+                  suhu, kelembapan, amonia);
 
-    // 2. Kontrol aktuator fisik
-    controlActuators(fuzzyOut);
+    // 3. Jalankan Algoritma Fuzzy Mamdani 125 Rule Base
+    FuzzyResult fuzzy = runMamdani125(suhu, kelembapan, amonia);
 
-    // 3. Kirim telemetry ke Supabase
-    sendSensorData(temperature, humidity, ammonia);
-    sendFuzzyResult(temperature, humidity, ammonia, fuzzyOut);
-    sendActuatorStatus(fuzzyOut);
+    // 4. Kendalikan Aktuator Fisik (PWM MOSFET & Relai Konveyor)
+    applyActuators(fuzzy.pwm_intake, fuzzy.pwm_exhaust, fuzzy.pwm_pemanas, fuzzy.status_konveyor);
+
+    Serial.printf("[FLC MAMDANI] Kondisi: %s\n", fuzzy.condition_label.c_str());
+    Serial.printf("  * Kipas Intake  : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_intake, fuzzy.pwm_intake);
+    Serial.printf("  * Kipas Exhaust : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_exhaust, fuzzy.pwm_exhaust);
+    Serial.printf("  * Lampu Pemanas : y*=%.2f -> PWM %d%%\n", fuzzy.y_star_pemanas, fuzzy.pwm_pemanas);
+    Serial.printf("  * Motor Konveyor: %s (Relai GPIO 27)\n", fuzzy.status_konveyor ? "ON (AKTIF)" : "OFF (MATI)");
+
+    // 5. Kirim Telemetri ke Supabase Cloud (Tabel Tunggal: 'telemetry')
+    sendTelemetryToSupabase(suhu, kelembapan, amonia, fuzzy);
   }
 }
 
-// ═══════════════════════════════════════════════
-// FUNGSI KEANGGOTAAN FUZZY (TRIANGULAR & TRAPEZOIDAL)
-// ═══════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// FUNGSI KEANGGOTAAN FUZZY (MEMBERSHIP FUNCTIONS)
+// ══════════════════════════════════════════════════════════════
+float calcLeftShoulder(float x, float a, float b) {
+  if (x <= a) return 1.0f;
+  if (x >= b) return 0.0f;
+  return (b - x) / (b - a);
+}
+
+float calcRightShoulder(float x, float a, float b) {
+  if (x <= a) return 0.0f;
+  if (x >= b) return 1.0f;
+  return (x - a) / (b - a);
+}
+
 float calcTri(float x, float a, float b, float c) {
   if (x <= a || x >= c) return 0.0f;
   if (x == b) return 1.0f;
@@ -157,261 +228,283 @@ float calcTrap(float x, float a, float b, float c, float d) {
   return (d - x) / (d - c);
 }
 
-// ═══════════════════════════════════════════════
-// BACA SENSOR AMONIA (MQ-135)
-// ═══════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// BACA SENSOR AMONIA MQ-135 (GPIO 34 ADC)
+// ══════════════════════════════════════════════════════════════
 float readAmmonia() {
-  int rawADC = analogRead(MQ135_PIN);
-  float voltage = rawADC * (3.3f / 4095.0f);
-  // Konversi ADC ke PPM Amonia (0 - 50 ppm)
-  float ppm = (rawADC / 4095.0f) * 50.0f; 
+  int rawADC = analogRead(PIN_MQ135);
+  // Konversi rentang ADC ESP32 (0 - 4095) ke konsentrasi PPM (0 - 50 ppm)
+  float ppm = ((float)rawADC / 4095.0f) * 50.0f;
+  if (ppm < 0.0f) ppm = 0.0f;
+  if (ppm > 50.0f) ppm = 50.0f;
   return ppm;
 }
 
-// ═══════════════════════════════════════════════
-// LOGIKA FUZZY MAMDANI 27 RULE BASE SKRIPSI DIAN
-// ═══════════════════════════════════════════════
-FuzzyOutput runMamdaniFuzzy(float temp, float humid, float ammonia) {
-  FuzzyOutput res;
+// ══════════════════════════════════════════════════════════════
+// MATRIKS 125 ATURAN MAMDANI (5 Suhu x 5 Kelembapan x 5 Amonia)
+// Output: 0=Mati, 1=Rendah (25%), 2=Sedang (50%), 3=Tinggi (75%), 4=Maksimal (100%)
+// ══════════════════════════════════════════════════════════════
+RuleOutputTerms getRuleOutput(int t, int h, int a) {
+  RuleOutputTerms out = {0, 0, 0};
 
-  // 1. FUZZIFIKASI
-  // Suhu: Dingin (<=18..23), Normal (18..23..28), Panas (23..28=>)
-  res.membership_temp[0] = calcTrap(temp, 0, 0, 18, 23);     // Dingin
-  res.membership_temp[1] = calcTri(temp, 18, 23, 28);        // Normal
-  res.membership_temp[2] = calcTrap(temp, 23, 28, 100, 100);  // Panas
+  // 1. Lampu Pemanas (Heater)
+  if (t == 0) { // SD (Sangat Dingin)
+    out.htTerm = 4; // Maksimal
+  } else if (t == 1) { // D (Dingin)
+    if (a >= 3) out.htTerm = 3; // Tinggi
+    else if (h >= 3) out.htTerm = 2; // Sedang
+    else out.htTerm = (h == 0) ? 1 : 2;
+  } else { // N, P, SP
+    out.htTerm = 0; // Mati
+  }
 
-  // Kelembapan: Kering (<=50..70), Normal (50..70..85), Basah (70..85=>)
-  res.membership_humid[0] = calcTrap(humid, 0, 0, 50, 70);    // Kering
-  res.membership_humid[1] = calcTri(humid, 50, 70, 85);       // Normal
-  res.membership_humid[2] = calcTrap(humid, 70, 85, 100, 100); // Basah
-
-  // Amonia: Aman (<=10..18), Waspada (10..18..25), Bahaya (18..25=>)
-  res.membership_ammonia[0] = calcTrap(ammonia, 0, 0, 10, 18);   // Aman
-  res.membership_ammonia[1] = calcTri(ammonia, 10, 18, 25);      // Waspada
-  res.membership_ammonia[2] = calcTrap(ammonia, 18, 25, 100, 100);// Bahaya
-
-  // 2. INFERENSI 27 RULE BASE
-  // Format Rule [ID, SuhuIdx, HumidIdx, AmoniaIdx, FanIn, FanOut, Heater, Conveyor]
-  // SuhuIdx: 0=Dingin, 1=Normal, 2=Panas
-  // HumidIdx: 0=Kering, 1=Normal, 2=Basah
-  // AmoniaIdx: 0=Aman, 1=Waspada, 2=Bahaya
-  struct RuleDef {
-    int id;
-    int tIdx; int hIdx; int aIdx;
-    bool fanIn; bool fanOut; bool heater; bool conveyor;
-    const char* tName; const char* hName; const char* aName;
-  };
-
-  RuleDef rules[27] = {
-    // Dingin (t=0)
-    { 1, 0,0,0, false,false,true, false, "Dingin","Kering","Aman" },
-    { 2, 0,0,1, true, true, true, false, "Dingin","Kering","Waspada" },
-    { 3, 0,0,2, true, true, true, true,  "Dingin","Kering","Bahaya" },
-    { 4, 0,1,0, false,false,true, false, "Dingin","Normal","Aman" },
-    { 5, 0,1,1, true, true, true, false, "Dingin","Normal","Waspada" },
-    { 6, 0,1,2, true, true, true, true,  "Dingin","Normal","Bahaya" },
-    { 7, 0,2,0, true, true, true, false, "Dingin","Basah","Aman" },
-    { 8, 0,2,1, true, true, true, false, "Dingin","Basah","Waspada" },
-    { 9, 0,2,2, true, true, true, true,  "Dingin","Basah","Bahaya" },
-
-    // Normal (t=1)
-    { 10, 1,0,0, false,false,false,false, "Normal","Kering","Aman" },
-    { 11, 1,0,1, true, true, false,false, "Normal","Kering","Waspada" },
-    { 12, 1,0,2, true, true, false,true,  "Normal","Kering","Bahaya" },
-    { 13, 1,1,0, false,false,false,false, "Normal","Normal","Aman" },
-    { 14, 1,1,1, true, true, false,false, "Normal","Normal","Waspada" },
-    { 15, 1,1,2, true, true, false,true,  "Normal","Normal","Bahaya" },
-    { 16, 1,2,0, true, true, false,false, "Normal","Basah","Aman" },
-    { 17, 1,2,1, true, true, false,false, "Normal","Basah","Waspada" },
-    { 18, 1,2,2, true, true, false,true,  "Normal","Basah","Bahaya" },
-
-    // Panas (t=2)
-    { 19, 2,0,0, true, true, false,false, "Panas","Kering","Aman" },
-    { 20, 2,0,1, true, true, false,false, "Panas","Kering","Waspada" },
-    { 21, 2,0,2, true, true, false,true,  "Panas","Kering","Bahaya" },
-    { 22, 2,1,0, true, true, false,false, "Panas","Normal","Aman" },
-    { 23, 2,1,1, true, true, false,false, "Panas","Normal","Waspada" },
-    { 24, 2,1,2, true, true, false,true,  "Panas","Normal","Bahaya" },
-    { 25, 2,2,0, true, true, false,false, "Panas","Basah","Aman" },
-    { 26, 2,2,1, true, true, false,false, "Panas","Basah","Waspada" },
-    { 27, 2,2,2, true, true, false,true,  "Panas","Basah","Bahaya" }
-  };
-
-  res.active_rule_count = 0;
-  float sumAlpha = 0.0f;
-  float numFanIn = 0.0f, numFanOut = 0.0f, numHeater = 0.0f, numConveyor = 0.0f;
-
-  for (int i = 0; i < 27; i++) {
-    float muT = res.membership_temp[rules[i].tIdx];
-    float muH = res.membership_humid[rules[i].hIdx];
-    float muA = res.membership_ammonia[rules[i].aIdx];
-
-    // Implikasi MIN
-    float alpha = min(muT, min(muH, muA));
-
-    if (alpha > 0.001f) {
-      if (res.active_rule_count < 27) {
-        ActiveRule& ar = res.active_rules[res.active_rule_count++];
-        ar.rule_id = rules[i].id;
-        ar.antecedent = String("IF Suhu=") + rules[i].tName + " AND Kelembapan=" + rules[i].hName + " AND Amonia=" + rules[i].aName;
-        ar.consequent = String("THEN FanIn=") + (rules[i].fanIn ? "ON" : "OFF") +
-                        ", FanOut=" + (rules[i].fanOut ? "ON" : "OFF") +
-                        ", Heater="  + (rules[i].heater ? "ON" : "OFF") +
-                        ", Conveyor="+ (rules[i].conveyor ? "ON" : "OFF");
-        ar.firing_strength = alpha;
-      }
-
-      sumAlpha += alpha;
-      if (rules[i].fanIn)    numFanIn   += alpha;
-      if (rules[i].fanOut)   numFanOut  += alpha;
-      if (rules[i].heater)   numHeater  += alpha;
-      if (rules[i].conveyor) numConveyor+= alpha;
+  // 2. Kipas Exhaust
+  if (a == 4) { // ST (Sangat Bahaya)
+    out.exTerm = (t >= 2) ? 4 : (t == 1 ? 3 : 2);
+  } else if (a == 3) { // T (Bahaya)
+    if (t >= 3) out.exTerm = 4;
+    else if (t == 2) out.exTerm = 3;
+    else if (t == 1) out.exTerm = 2;
+    else out.exTerm = 1;
+  } else if (a == 2) { // S (Waspada)
+    if (t == 4) out.exTerm = 4;
+    else if (t == 3) out.exTerm = 3;
+    else if (t == 2) out.exTerm = 2;
+    else if (t == 1) out.exTerm = 1;
+    else out.exTerm = 0;
+  } else { // R (Aman) & SR (Sangat Aman)
+    if (t == 4) out.exTerm = 4;
+    else if (t == 3) out.exTerm = 3;
+    else if (t == 2) {
+      if (h == 4) out.exTerm = 2;
+      else if (h == 3) out.exTerm = 1;
+      else out.exTerm = 0;
+    } else {
+      out.exTerm = 0;
     }
   }
 
-  // 3. DEFUZZIFIKASI (Centroid / Center of Area)
-  float denom = (sumAlpha > 0.0001f) ? sumAlpha : 1.0f;
-  res.fan_intake_pct  = (numFanIn / denom) * 100.0f;
-  res.fan_exhaust_pct = (numFanOut / denom) * 100.0f;
-  res.heater_pct     = (numHeater / denom) * 100.0f;
-  res.conveyor_pct   = (numConveyor / denom) * 100.0f;
-
-  // 4. DIGITAL RELAY STATE DECISION (Crisp >= 50%)
-  res.fan_intake_state  = (res.fan_intake_pct >= 50.0f);
-  res.fan_exhaust_state = (res.fan_exhaust_pct >= 50.0f);
-  res.heater_state      = (res.heater_pct >= 50.0f);
-  res.conveyor_state    = (res.conveyor_pct >= 50.0f);
-
-  // Label kondisi akhir
-  if (res.membership_ammonia[2] > 0.4f || res.membership_temp[2] > 0.6f) {
-    res.condition_label = "Kondisi Bahaya";
-  } else if (res.membership_ammonia[1] > 0.4f || res.membership_temp[2] > 0.2f || res.membership_humid[2] > 0.5f) {
-    res.condition_label = "Kondisi Waspada";
-  } else {
-    res.condition_label = "Kondisi Normal";
+  // 3. Kipas Intake
+  if (t == 4) { // SP (Sangat Panas)
+    out.inTerm = 4; // Maksimal
+  } else if (t == 3) { // P (Panas)
+    out.inTerm = (a >= 2 || h >= 3) ? 3 : 2; // Tinggi atau Sedang
+  } else if (t == 2) { // N (Normal)
+    if (a == 4) out.inTerm = 3;
+    else if (a == 3) out.inTerm = 2;
+    else if (a == 2) out.inTerm = 1;
+    else {
+      if (h == 4) out.inTerm = 2;
+      else if (h == 3) out.inTerm = 1;
+      else out.inTerm = 0;
+    }
+  } else if (t == 1) { // D (Dingin)
+    out.inTerm = (a >= 3) ? 1 : 0;
+  } else { // SD (Sangat Dingin)
+    out.inTerm = 0;
   }
 
-  return res;
+  return out;
 }
 
-// ═══════════════════════════════════════════════
-// EKSEKUSI AKTUATOR FISIK (RELAY)
-// ═══════════════════════════════════════════════
-void controlActuators(const FuzzyOutput& fuzzy) {
-  digitalWrite(PIN_FAN_INTAKE,  fuzzy.fan_intake_state  ? HIGH : LOW);
-  digitalWrite(PIN_FAN_EXHAUST, fuzzy.fan_exhaust_state ? HIGH : LOW);
-  digitalWrite(PIN_HEATER,      fuzzy.heater_state      ? HIGH : LOW);
-  digitalWrite(PIN_CONVEYOR,    fuzzy.conveyor_state    ? HIGH : LOW);
+// ══════════════════════════════════════════════════════════════
+// DEFUZZIFIKASI CENTROID COA & SCALING PWM (Persamaan 3.1 & 3.2)
+// ══════════════════════════════════════════════════════════════
+CentroidResult defuzzifyCentroid(const float betas[5]) {
+  float sumBeta = betas[0] + betas[1] + betas[2] + betas[3] + betas[4];
+  if (sumBeta <= 0.0001f) {
+    return { 8.3f, 0 };
+  }
 
-  Serial.printf("[FLC DECISION] Status Kandang: %s\n", fuzzy.condition_label.c_str());
-  Serial.printf(" → Fan Intake  : %s (%.1f%%)\n", fuzzy.fan_intake_state  ? "ON " : "OFF", fuzzy.fan_intake_pct);
-  Serial.printf(" → Fan Exhaust : %s (%.1f%%)\n", fuzzy.fan_exhaust_state ? "ON " : "OFF", fuzzy.fan_exhaust_pct);
-  Serial.printf(" → Lampu Pemanas: %s (%.1f%%)\n", fuzzy.heater_state     ? "ON " : "OFF", fuzzy.heater_pct);
-  Serial.printf(" → Motor Konveyor: %s (%.1f%%)\n", fuzzy.conveyor_state   ? "ON " : "OFF", fuzzy.conveyor_pct);
+  float num = 0.0f;
+  float den = 0.0f;
+  const float dy = 0.5f;
+
+  for (float y = 0.0f; y <= 100.0f; y += dy) {
+    // 5 fungsi keanggotaan output domain [0..100]
+    float m0 = (y <= 25.0f) ? ((25.0f - y) / 25.0f) : 0.0f;
+
+    float m1 = 0.0f;
+    if (y < 25.0f) m1 = y / 25.0f;
+    else if (y <= 50.0f) m1 = (50.0f - y) / 25.0f;
+
+    float m2 = 0.0f;
+    if (y >= 25.0f && y < 50.0f) m2 = (y - 25.0f) / 25.0f;
+    else if (y >= 50.0f && y <= 75.0f) m2 = (75.0f - y) / 25.0f;
+
+    float m3 = 0.0f;
+    if (y >= 50.0f && y < 75.0f) m3 = (y - 50.0f) / 25.0f;
+    else if (y >= 75.0f && y <= 100.0f) m3 = (100.0f - y) / 25.0f;
+
+    float m4 = (y >= 75.0f) ? ((y - 75.0f) / 25.0f) : 0.0f;
+
+    float mu = max(min(betas[0], m0),
+               max(min(betas[1], m1),
+               max(min(betas[2], m2),
+               max(min(betas[3], m3), min(betas[4], m4)))));
+
+    num += y * mu * dy;
+    den += mu * dy;
+  }
+
+  if (den <= 0.00001f) {
+    return { 8.3f, 0 };
+  }
+
+  // Persamaan 3.1: Centroid COA domain [0..100]
+  float y_star = num / den;
+
+  // Persamaan 3.2: Scaling PWM dari [8.3 .. 91.7] ke [0 .. 100]
+  float pwmRaw = ((y_star - 8.3f) / (91.7f - 8.3f)) * 100.0f;
+  int pwm = constrain((int)roundf(pwmRaw), 0, 100);
+
+  return { y_star, pwm };
 }
 
-// ═══════════════════════════════════════════════
-// TELEMETRY HTTP POST TO SUPABASE
-// ═══════════════════════════════════════════════
-void sendSensorData(float temp, float humid, float ammonia) {
+// ══════════════════════════════════════════════════════════════
+// MESIN INFERENSI FUZZY MAMDANI 125 RULE BASE
+// ══════════════════════════════════════════════════════════════
+FuzzyResult runMamdani125(float temp, float humid, float nh3) {
+  // 1. Fuzzifikasi Suhu (10–40 °C)
+  float muT[5] = {
+    calcLeftShoulder(temp, 14.0f, 18.0f),       // SD: Sangat Dingin [10, 10, 14, 18]
+    calcTri(temp, 14.0f, 18.0f, 20.0f),        // D: Dingin [14, 18, 18, 20]
+    calcTrap(temp, 18.0f, 20.0f, 25.0f, 27.0f),// N: Normal [18, 20, 25, 27]
+    calcTri(temp, 25.0f, 27.0f, 31.0f),        // P: Panas [25, 27, 27, 31]
+    calcRightShoulder(temp, 27.0f, 31.0f)       // SP: Sangat Panas [27, 31, 40, 40]
+  };
+
+  // 2. Fuzzifikasi Kelembapan (20–100 %RH)
+  float muH[5] = {
+    calcLeftShoulder(humid, 40.0f, 50.0f),      // SK: Sangat Kering [20, 20, 40, 50]
+    calcTri(humid, 40.0f, 50.0f, 60.0f),       // K: Kering [40, 50, 50, 60]
+    calcTrap(humid, 50.0f, 60.0f, 80.0f, 85.0f),// N: Normal [50, 60, 80, 85]
+    calcTri(humid, 80.0f, 85.0f, 92.0f),       // B: Basah [80, 85, 85, 92]
+    calcRightShoulder(humid, 85.0f, 92.0f)      // SB: Sangat Basah [85, 92, 100, 100]
+  };
+
+  // 3. Fuzzifikasi Gas Amonia (0–50 ppm)
+  float muA[5] = {
+    calcLeftShoulder(nh3, 5.0f, 10.0f),         // SR: Sangat Aman [0, 0, 5, 10]
+    calcTri(nh3, 5.0f, 10.0f, 15.0f),          // R: Aman [5, 10, 10, 15]
+    calcTri(nh3, 10.0f, 15.0f, 20.0f),         // S: Waspada [10, 15, 15, 20]
+    calcTri(nh3, 15.0f, 20.0f, 30.0f),         // T: Bahaya [15, 20, 20, 30]
+    calcRightShoulder(nh3, 20.0f, 30.0f)        // ST: Sangat Bahaya [20, 30, 50, 50]
+  };
+
+  // Array clipping alpha untuk 5 term output
+  float betasIn[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float betasEx[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  float betasHt[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+  // 4. Inferensi 125 Aturan (5x5x5) dengan Implikasi MIN & Agregasi MAX
+  for (int t = 0; t < 5; t++) {
+    for (int h = 0; h < 5; h++) {
+      for (int a = 0; a < 5; a++) {
+        float alpha = min(muT[t], min(muH[h], muA[a]));
+        if (alpha > 0.001f) {
+          RuleOutputTerms out = getRuleOutput(t, h, a);
+          if (alpha > betasIn[out.inTerm]) betasIn[out.inTerm] = alpha;
+          if (alpha > betasEx[out.exTerm]) betasEx[out.exTerm] = alpha;
+          if (alpha > betasHt[out.htTerm]) betasHt[out.htTerm] = alpha;
+        }
+      }
+    }
+  }
+
+  // 5. Defuzzifikasi Centroid & Scaling PWM
+  CentroidResult resIn = defuzzifyCentroid(betasIn);
+  CentroidResult resEx = defuzzifyCentroid(betasEx);
+  CentroidResult resHt = defuzzifyCentroid(betasHt);
+
+  // 6. Relai Biner Motor Konveyor (Sesuai Proposal: Amonia >= 20 ppm ATAU Kelembapan > 90%)
+  bool conveyor = (nh3 >= 20.0f || humid > 90.0f);
+
+  // Label kondisi mikroklimat
+  String label = "Kondisi Normal";
+  if (nh3 >= 20.0f || temp >= 31.0f || temp <= 14.0f) {
+    label = "Kondisi Bahaya";
+  } else if (nh3 >= 15.0f || temp >= 27.0f || temp <= 18.0f || humid >= 85.0f) {
+    label = "Kondisi Waspada";
+  }
+
+  FuzzyResult result;
+  result.y_star_intake   = resIn.y_star;
+  result.y_star_exhaust  = resEx.y_star;
+  result.y_star_pemanas  = resHt.y_star;
+  result.pwm_intake      = resIn.pwm;
+  result.pwm_exhaust     = resEx.pwm;
+  result.pwm_pemanas     = resHt.pwm;
+  result.status_konveyor = conveyor;
+  result.condition_label = label;
+
+  return result;
+}
+
+// ══════════════════════════════════════════════════════════════
+// KONTROL AKTUATOR FISIK (PWM MOSFET & RELAI KONVEYOR)
+// ══════════════════════════════════════════════════════════════
+void applyActuators(int pwm_in, int pwm_ex, int pwm_ht, bool conveyor_on) {
+  int dutyIn = (pwm_in * 255) / 100;
+  int dutyEx = (pwm_ex * 255) / 100;
+  int dutyHt = (pwm_ht * 255) / 100;
+
+  WRITE_PWM(PIN_FAN_INTAKE,  CH_FAN_INTAKE,  dutyIn);
+  WRITE_PWM(PIN_FAN_EXHAUST, CH_FAN_EXHAUST, dutyEx);
+  WRITE_PWM(PIN_HEATER,      CH_HEATER,      dutyHt);
+
+  digitalWrite(PIN_CONVEYOR, conveyor_on ? HIGH : LOW);
+}
+
+// ══════════════════════════════════════════════════════════════
+// KIRIM TELEMETRI KE TABEL TUNGGAL 'telemetry' SUPABASE (Tabel 3.5)
+// ══════════════════════════════════════════════════════════════
+void sendTelemetryToSupabase(float suhu, float humid, float nh3, const FuzzyResult& f) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
-  String url = String(SUPABASE_URL) + "/rest/v1/sensor_readings";
+  String url = String(SUPABASE_URL) + "/rest/v1/telemetry";
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
   http.addHeader("Prefer", "return=minimal");
 
-  StaticJsonDocument<256> doc;
-  doc["temperature"] = temp;
-  doc["humidity"]    = humid;
-  doc["ammonia"]     = ammonia;
-  doc["device_id"]   = DEVICE_ID;
+  // Format JSON sesuai Tabel 3.5 Proposal Skripsi
+  StaticJsonDocument<384> doc;
+  doc["suhu"]            = suhu;
+  doc["kelembapan"]      = humid;
+  doc["amonia"]          = nh3;
+  doc["pwm_intake"]      = f.pwm_intake;
+  doc["pwm_exhaust"]     = f.pwm_exhaust;
+  doc["pwm_pemanas"]     = f.pwm_pemanas;
+  doc["status_konveyor"] = f.status_konveyor;
 
   String body;
   serializeJson(doc, body);
   int code = http.POST(body);
-  Serial.printf("[HTTP] sensor_readings → %d\n", code);
+  Serial.printf("[HTTP POST] /rest/v1/telemetry -> %d\n", code);
   http.end();
 }
 
-void sendActuatorStatus(const FuzzyOutput& fuzzy) {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  String url = String(SUPABASE_URL) + "/rest/v1/actuator_status?device_id=eq." + DEVICE_ID;
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.addHeader("Prefer", "return=minimal");
-
-  StaticJsonDocument<256> doc;
-  doc["fan_intake"]  = fuzzy.fan_intake_state;
-  doc["fan_exhaust"] = fuzzy.fan_exhaust_state;
-  doc["heater"]      = fuzzy.heater_state;
-  doc["conveyor"]    = fuzzy.conveyor_state;
-  doc["updated_at"]  = "now()";
-
-  String body;
-  serializeJson(doc, body);
-  int code = http.PATCH(body);
-  Serial.printf("[HTTP] actuator_status → %d\n", code);
-  http.end();
-}
-
-void sendFuzzyResult(float temp, float humid, float ammonia, const FuzzyOutput& fuzzy) {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  String url = String(SUPABASE_URL) + "/rest/v1/fuzzy_results";
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", SUPABASE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-  http.addHeader("Prefer", "return=minimal");
-
-  DynamicJsonDocument doc(2048);
-  doc["input_temp"]          = temp;
-  doc["input_humidity"]      = humid;
-  doc["input_ammonia"]       = ammonia;
-  doc["output_fan_intake"]   = fuzzy.fan_intake_pct;
-  doc["output_fan_exhaust"]  = fuzzy.fan_exhaust_pct;
-  doc["output_heater"]       = fuzzy.heater_pct;
-  doc["output_conveyor"]     = fuzzy.conveyor_pct;
-  doc["condition_label"]     = fuzzy.condition_label;
-  doc["device_id"]           = DEVICE_ID;
-
-  JsonArray rules = doc.createNestedArray("active_rules");
-  for (int i = 0; i < fuzzy.active_rule_count; i++) {
-    JsonObject r = rules.createNestedObject();
-    r["rule_id"]          = fuzzy.active_rules[i].rule_id;
-    r["antecedent"]       = fuzzy.active_rules[i].antecedent;
-    r["consequent"]       = fuzzy.active_rules[i].consequent;
-    r["firing_strength"]  = fuzzy.active_rules[i].firing_strength;
-  }
-
-  String body;
-  serializeJson(doc, body);
-  int code = http.POST(body);
-  Serial.printf("[HTTP] fuzzy_results → %d\n", code);
-  http.end();
-}
-
+// ══════════════════════════════════════════════════════════════
+// KONEKSI KE JARINGAN WIFI
+// ══════════════════════════════════════════════════════════════
 void connectWiFi() {
-  Serial.printf("\n[WiFi] Connecting to %s", WIFI_SSID);
+  if (WiFi.status() == WL_CONNECTED) return;
+
+  Serial.printf("\n[WiFi] Menghubungkan ke %s", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 25) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
+
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("\n[WiFi] Berhasil Terhubung! Alamat IP: %s\n", WiFi.localIP().toString().c_str());
   } else {
-    Serial.println("\n[WiFi] Gagal connect, retrying...");
+    Serial.println("\n[WiFi] Belum terhubung, akan mencoba kembali pada siklus berikutnya...");
   }
 }

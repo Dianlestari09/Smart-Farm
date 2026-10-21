@@ -371,28 +371,27 @@
       </section>
 
       <!-- ────────────────────────────────────────────────────────────
-           VIEW 2: FUZZY LOGIC MAMDANI
+           VIEW 2: FUZZY LOGIC MAMDANI (125 RULE BASE)
       ──────────────────────────────────────────────────────────── -->
       <section class="view-section" id="view-fuzzy">
         <div class="view-header">
           <div>
-            <h1 class="view-title-main">◈ Fuzzy Logic Mamdani</h1>
-            <p class="view-title-desc">Visualisasi Fuzzifikasi, Inferensi 27 Aturan, dan Defuzzifikasi Centroid</p>
+            <h1 class="view-title-main">◈ Fuzzy Logic Mamdani (125 Rule Base)</h1>
+            <p class="view-title-desc">Visualisasi Fuzzifikasi 5 Himpunan, Inferensi 125 Aturan, dan Defuzzifikasi Centroid COA Sesuai Bab III Proposal</p>
           </div>
         </div>
 
         <!-- Live Simulator Sliders -->
         <div class="fuzzy-simulator-box">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:14px;font-weight:700;color:var(--text-main);">🎛️ Simulator Nilai Input Sensor (Uji
-              Coba Sidang Skripsi)</span>
-            <span style="font-size:11px;color:var(--text-muted);">Geser slider untuk menguji respon 27 aturan</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+            <span style="font-size:14px;font-weight:700;color:var(--text-main);">🎛️ Simulator Nilai Input Sensor (Pengujian Sidang Proposal Skripsi)</span>
+            <span style="font-size:11px;color:var(--text-muted);">Geser slider untuk menguji respon 125 aturan Mamdani &amp; defuzzifikasi Centroid</span>
           </div>
           <div class="sim-slider-row">
             <!-- Slider Suhu -->
             <div class="sim-slider-item">
               <div class="sim-slider-label">
-                <span>Input Suhu Udara:</span>
+                <span>Input Suhu Udara (10–40 °C):</span>
                 <span class="sim-slider-val" id="sim-temp-val">24.0 °C</span>
               </div>
               <input type="range" id="sim-temp" min="10" max="40" step="0.5" value="24">
@@ -401,16 +400,16 @@
             <!-- Slider Kelembapan -->
             <div class="sim-slider-item">
               <div class="sim-slider-label">
-                <span>Input Kelembapan:</span>
-                <span class="sim-slider-val" id="sim-hum-val">68.0 %</span>
+                <span>Input Kelembapan (20–100 %RH):</span>
+                <span class="sim-slider-val" id="sim-hum-val">65.0 %</span>
               </div>
-              <input type="range" id="sim-hum" min="30" max="100" step="1" value="68">
+              <input type="range" id="sim-hum" min="20" max="100" step="1" value="65">
             </div>
 
             <!-- Slider Amonia -->
             <div class="sim-slider-item">
               <div class="sim-slider-label">
-                <span>Input Gas Amonia:</span>
+                <span>Input Gas Amonia (0–50 ppm):</span>
                 <span class="sim-slider-val" id="sim-nh3-val">12.0 ppm</span>
               </div>
               <input type="range" id="sim-nh3" min="0" max="50" step="0.5" value="12">
@@ -418,129 +417,194 @@
           </div>
 
           <div id="sim-output-text"
-            style="margin-top:14px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);font-family:var(--font-mono);">
-            Menghitung output...
+            style="margin-top:14px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);font-family:var(--font-mono);line-height:1.6;">
+            Menghitung output Mamdani &amp; Centroid...
           </div>
         </div>
 
-        <!-- Derajat Keanggotaan (Membership Degrees) -->
+        <!-- Derajat Keanggotaan (Membership Degrees - 5 Himpunan Tiap Variabel) -->
         <div class="section-headline">
           <span class="section-icon">📊</span>
-          <h2 class="section-title">1. Derajat Keanggotaan (Fuzzifikasi)</h2>
+          <h2 class="section-title">1. Derajat Keanggotaan (Fuzzifikasi 5 Himpunan)</h2>
           <div class="section-divider"></div>
         </div>
 
         <div class="membership-grid">
-          <!-- Suhu -->
+          <!-- Suhu (10 - 40 °C) -->
           <div class="membership-card">
             <div class="membership-title">
-              <span>🌡️ Suhu Udara</span>
-              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+              <span>🌡️ Suhu Udara (10–40 °C)</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">5 Himpunan</span>
             </div>
+            <!-- SD: Sangat Dingin -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Dingin</span>
+              <span class="m-bar-name" title="Bahu Kiri [10, 10, 14, 18]">SD</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-temp-dingin" style="width:0%;background:#38BDF8;"></div>
+                <div class="m-bar-fill" id="m-temp-sd" style="width:0%;background:#0284C7;"></div>
               </div>
-              <span class="m-bar-val" id="m-temp-dingin-val">0.00</span>
+              <span class="m-bar-val" id="m-temp-sd-val">0.00</span>
             </div>
+            <!-- D: Dingin -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Normal</span>
+              <span class="m-bar-name" title="Segitiga [14, 18, 18, 20]">D</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-temp-normal" style="width:0%;background:#16A34A;"></div>
+                <div class="m-bar-fill" id="m-temp-d" style="width:0%;background:#38BDF8;"></div>
               </div>
-              <span class="m-bar-val" id="m-temp-normal-val">0.00</span>
+              <span class="m-bar-val" id="m-temp-d-val">0.00</span>
             </div>
+            <!-- N: Normal -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Panas</span>
+              <span class="m-bar-name" title="Trapesium [18, 20, 25, 27]">N</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-temp-panas" style="width:0%;background:#DC2626;"></div>
+                <div class="m-bar-fill" id="m-temp-n" style="width:0%;background:#16A34A;"></div>
               </div>
-              <span class="m-bar-val" id="m-temp-panas-val">0.00</span>
+              <span class="m-bar-val" id="m-temp-n-val">0.00</span>
+            </div>
+            <!-- P: Panas -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Segitiga [25, 27, 27, 31]">P</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-temp-p" style="width:0%;background:#F59E0B;"></div>
+              </div>
+              <span class="m-bar-val" id="m-temp-p-val">0.00</span>
+            </div>
+            <!-- SP: Sangat Panas -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Bahu Kanan [27, 31, 40, 40]">SP</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-temp-sp" style="width:0%;background:#DC2626;"></div>
+              </div>
+              <span class="m-bar-val" id="m-temp-sp-val">0.00</span>
             </div>
           </div>
 
-          <!-- Kelembapan -->
+          <!-- Kelembapan (20 - 100 %RH) -->
           <div class="membership-card">
             <div class="membership-title">
-              <span>💧 Kelembapan Udara</span>
-              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+              <span>💧 Kelembapan Udara (20–100 %RH)</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">5 Himpunan</span>
             </div>
+            <!-- SK: Sangat Kering -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Kering</span>
+              <span class="m-bar-name" title="Bahu Kiri [20, 20, 40, 50]">SK</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-hum-kering" style="width:0%;background:#D97706;"></div>
+                <div class="m-bar-fill" id="m-hum-sk" style="width:0%;background:#D97706;"></div>
               </div>
-              <span class="m-bar-val" id="m-hum-kering-val">0.00</span>
+              <span class="m-bar-val" id="m-hum-sk-val">0.00</span>
             </div>
+            <!-- K: Kering -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Normal</span>
+              <span class="m-bar-name" title="Segitiga [40, 50, 50, 60]">K</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-hum-normal" style="width:0%;background:#16A34A;"></div>
+                <div class="m-bar-fill" id="m-hum-k" style="width:0%;background:#FBBF24;"></div>
               </div>
-              <span class="m-bar-val" id="m-hum-normal-val">0.00</span>
+              <span class="m-bar-val" id="m-hum-k-val">0.00</span>
             </div>
+            <!-- N: Normal -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Basah</span>
+              <span class="m-bar-name" title="Trapesium [50, 60, 80, 85]">N</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-hum-basah" style="width:0%;background:#0284C7;"></div>
+                <div class="m-bar-fill" id="m-hum-n" style="width:0%;background:#16A34A;"></div>
               </div>
-              <span class="m-bar-val" id="m-hum-basah-val">0.00</span>
+              <span class="m-bar-val" id="m-hum-n-val">0.00</span>
+            </div>
+            <!-- B: Basah -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Segitiga [80, 85, 85, 92]">B</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-hum-b" style="width:0%;background:#0284C7;"></div>
+              </div>
+              <span class="m-bar-val" id="m-hum-b-val">0.00</span>
+            </div>
+            <!-- SB: Sangat Basah -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Bahu Kanan [85, 92, 100, 100]">SB</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-hum-sb" style="width:0%;background:#2563EB;"></div>
+              </div>
+              <span class="m-bar-val" id="m-hum-sb-val">0.00</span>
             </div>
           </div>
 
-          <!-- Amonia -->
+          <!-- Gas Amonia (0 - 50 ppm) -->
           <div class="membership-card">
             <div class="membership-title">
-              <span>☁️ Gas Amonia (NH₃)</span>
-              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Trapezoid &amp; Triangle</span>
+              <span>☁️ Gas Amonia (0–50 ppm)</span>
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;">5 Himpunan</span>
             </div>
+            <!-- SR: Sangat Aman -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Aman</span>
+              <span class="m-bar-name" title="Bahu Kiri [0, 0, 5, 10]">SR</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-nh3-aman" style="width:0%;background:#16A34A;"></div>
+                <div class="m-bar-fill" id="m-nh3-sr" style="width:0%;background:#16A34A;"></div>
               </div>
-              <span class="m-bar-val" id="m-nh3-aman-val">0.00</span>
+              <span class="m-bar-val" id="m-nh3-sr-val">0.00</span>
             </div>
+            <!-- R: Aman -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Waspada</span>
+              <span class="m-bar-name" title="Segitiga [5, 10, 10, 15]">R</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-nh3-waspada" style="width:0%;background:#D97706;"></div>
+                <div class="m-bar-fill" id="m-nh3-r" style="width:0%;background:#84CC16;"></div>
               </div>
-              <span class="m-bar-val" id="m-nh3-waspada-val">0.00</span>
+              <span class="m-bar-val" id="m-nh3-r-val">0.00</span>
             </div>
+            <!-- S: Waspada -->
             <div class="m-bar-row">
-              <span class="m-bar-name">Bahaya</span>
+              <span class="m-bar-name" title="Segitiga [10, 15, 15, 20]">S</span>
               <div class="m-bar-track">
-                <div class="m-bar-fill" id="m-nh3-bahaya" style="width:0%;background:#DC2626;"></div>
+                <div class="m-bar-fill" id="m-nh3-s" style="width:0%;background:#F59E0B;"></div>
               </div>
-              <span class="m-bar-val" id="m-nh3-bahaya-val">0.00</span>
+              <span class="m-bar-val" id="m-nh3-s-val">0.00</span>
+            </div>
+            <!-- T: Bahaya -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Segitiga [15, 20, 20, 30]">T</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-nh3-t" style="width:0%;background:#EA580C;"></div>
+              </div>
+              <span class="m-bar-val" id="m-nh3-t-val">0.00</span>
+            </div>
+            <!-- ST: Sangat Bahaya -->
+            <div class="m-bar-row">
+              <span class="m-bar-name" title="Bahu Kanan [20, 30, 50, 50]">ST</span>
+              <div class="m-bar-track">
+                <div class="m-bar-fill" id="m-nh3-st" style="width:0%;background:#DC2626;"></div>
+              </div>
+              <span class="m-bar-val" id="m-nh3-st-val">0.00</span>
             </div>
           </div>
         </div>
 
-        <!-- Active Rules Table -->
+        <!-- Active Rules & 125 Rules Explorer Table -->
         <div class="section-headline">
           <span class="section-icon">📜</span>
-          <h2 class="section-title">2. Aturan Fuzzy Aktif (Inferensi MIN)</h2>
+          <h2 class="section-title">2. Inferensi Aturan Fuzzy (125 Rule Base)</h2>
           <div class="section-divider"></div>
+          <div style="display:flex;gap:8px;">
+            <button class="chart-btn active" id="btn-show-active-rules" style="font-size:11px;">Aturan Aktif Saja (&mu; &gt; 0)</button>
+            <button class="chart-btn" id="btn-show-all-rules" style="font-size:11px;">Semua 125 Aturan</button>
+          </div>
         </div>
 
         <div class="fuzzy-overview-card" style="padding:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary);" id="rules-view-heading">Daftar Aturan yang Sedang Aktif:</span>
+            <input type="text" id="rule-search-input" placeholder="Cari nomor rule atau kata kunci..."
+              style="padding:5px 10px;font-size:11px;border-radius:var(--radius-sm);border:1px solid var(--border);width:220px;display:none;">
+          </div>
           <div class="rules-table-container">
             <table class="rules-table">
               <thead>
                 <tr>
-                  <th style="width:70px;">Rule ID</th>
+                  <th style="width:75px;">Rule ID</th>
                   <th>Antecedent (Kondisi IF)</th>
                   <th>Consequent (Aksi THEN)</th>
-                  <th style="text-align:right;width:120px;">Firing Strength (&alpha;)</th>
+                  <th style="text-align:right;width:125px;">Firing Strength (&alpha;)</th>
                 </tr>
               </thead>
               <tbody id="active-rules-body">
                 <tr>
-                  <td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted);">Memuat aturan aktif...
-                  </td>
+                  <td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted);">Memuat aturan...</td>
                 </tr>
               </tbody>
             </table>
@@ -638,22 +702,25 @@
         <!-- Log Table Card -->
         <div class="fuzzy-overview-card" style="padding:18px;">
           <div class="rules-table-container">
-            <table class="rules-table">
+            <table class="rules-table" style="min-width:850px;">
               <thead>
                 <tr>
-                  <th style="width:50px;">No</th>
+                  <th style="width:40px;">No</th>
                   <th>Waktu Pengambilan</th>
-                  <th>Suhu Udara</th>
-                  <th>Kelembapan</th>
-                  <th>Gas Amonia (NH₃)</th>
+                  <th>Suhu (°C)</th>
+                  <th>Kelembapan (%RH)</th>
+                  <th>Amonia (ppm)</th>
+                  <th>PWM Intake</th>
+                  <th>PWM Exhaust</th>
+                  <th>PWM Pemanas</th>
+                  <th>Motor Konveyor</th>
                   <th>Status Mikroklimat</th>
-                  <th>Device ID</th>
                 </tr>
               </thead>
               <tbody id="log-table-body">
                 <tr>
-                  <td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">
-                    Memuat log dari Supabase...
+                  <td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted);">
+                    Memuat log dari tabel telemetry Supabase...
                   </td>
                 </tr>
               </tbody>
@@ -669,7 +736,7 @@
         <div class="view-header">
           <div>
             <h1 class="view-title-main">◉ Info Sistem &amp; Naskah Skripsi</h1>
-            <p class="view-title-desc">Spesifikasi hardware, parameter mikroklimat, dan data penelitian</p>
+            <p class="view-title-desc">Spesifikasi hardware, database tunggal telemetry, dan parameter FLC 125 aturan</p>
           </div>
         </div>
 
@@ -680,8 +747,7 @@
             </h3>
             <div class="info-table-row">
               <span class="info-label">Judul Penelitian</span>
-              <span class="info-val" style="font-size:11px;max-width:180px;text-align:right;">Rancang Bangun Sistem
-                Otomatisasi Mikroklimat Kandang Ayam</span>
+              <span class="info-val" style="font-size:11px;max-width:200px;text-align:right;">Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur Berbasis Fuzzy Logic Controller</span>
             </div>
             <div class="info-table-row">
               <span class="info-label">Peneliti / Mahasiswa</span>
@@ -699,7 +765,7 @@
 
           <!-- Spesifikasi Perangkat Keras -->
           <div class="info-card">
-            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🔧 Hardware &amp; Cloud
+            <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--primary);">🔧 Hardware &amp; Database
             </h3>
             <div class="info-table-row">
               <span class="info-label">Mikrokontroler</span>
@@ -707,19 +773,23 @@
             </div>
             <div class="info-table-row">
               <span class="info-label">Sensor Suhu &amp; Kelembapan</span>
-              <span class="info-val">SHT31 (I2C) / DHT22 (GPIO 4)</span>
+              <span class="info-val">SHT31 (I2C SDA 21, SCL 22)</span>
             </div>
             <div class="info-table-row">
               <span class="info-label">Sensor Gas Amonia</span>
               <span class="info-val">MQ-135 (ADC GPIO 34)</span>
             </div>
             <div class="info-table-row">
-              <span class="info-label">Cloud Database</span>
-              <span class="info-val">Supabase PostgreSQL (Realtime)</span>
+              <span class="info-label">Aktuator PWM (MOSFET)</span>
+              <span class="info-val" style="font-size:11px;">GPIO 16 (In), 17 (Ex), 23 (Heat)</span>
             </div>
             <div class="info-table-row">
-              <span class="info-label">Web Hosting</span>
-              <span class="info-val">Vercel (Edge Network)</span>
+              <span class="info-label">Aktuator Relai Biner</span>
+              <span class="info-val">GPIO 27 (Motor Konveyor)</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Cloud Database</span>
+              <span class="info-val">Tabel Tunggal: 'telemetry'</span>
             </div>
           </div>
 
@@ -741,7 +811,11 @@
             </div>
             <div class="info-table-row">
               <span class="info-label">Batas Bahaya Amonia</span>
-              <span class="info-val" style="color:var(--danger);">&gt; 25.0 ppm</span>
+              <span class="info-val" style="color:var(--danger);">&ge; 20.0 ppm</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Pemicu Konveyor</span>
+              <span class="info-val" style="font-size:11px;color:var(--warning);">Amonia &ge; 20 ppm ATAU RH &gt; 90%</span>
             </div>
           </div>
 
@@ -755,15 +829,19 @@
             </div>
             <div class="info-table-row">
               <span class="info-label">Jumlah Aturan (Rule Base)</span>
-              <span class="info-val">27 Aturan (3 × 3 × 3)</span>
+              <span class="info-val" style="color:var(--primary);font-weight:700;">125 Aturan (5 × 5 × 5)</span>
             </div>
             <div class="info-table-row">
-              <span class="info-label">Operasi Implikasi</span>
-              <span class="info-val">MIN (AND)</span>
+              <span class="info-label">Himpunan Input</span>
+              <span class="info-val" style="font-size:11px;">5 Suhu × 5 RH × 5 Amonia</span>
             </div>
             <div class="info-table-row">
               <span class="info-label">Defuzzifikasi</span>
-              <span class="info-val">Centroid (Center of Area)</span>
+              <span class="info-val">Centroid COA Domain [0..100]</span>
+            </div>
+            <div class="info-table-row">
+              <span class="info-label">Scaling PWM</span>
+              <span class="info-val" style="font-size:11px;">Persamaan 3.2 (8.3 - 91.7)</span>
             </div>
           </div>
         </div>
@@ -856,7 +934,7 @@
 
   <!-- Konfigurasi Supabase & Script Aplikasi Native -->
   <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=2.0"></script>
 </body>
 
 </html>

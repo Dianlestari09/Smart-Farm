@@ -2,24 +2,27 @@
  * ════════════════════════════════════════════════════════════════
  * SMART FARM POULTRY MONITOR — NATIVE VANILLA JAVASCRIPT
  * Skripsi: Dian Lestari Kurniawati (NIM: 230605110016)
- * "Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur"
+ * "Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur
+ *  Berbasis Fuzzy Logic Controller"
  * 
- * Features:
- * 1. 100% Vanilla JS (No build step, instant Vercel deploy)
- * 2. Official Supabase Realtime WebSocket Client + REST Fallback
- * 3. 27 Rule Base Fuzzy Mamdani Controller Client-Side & Live Simulator
- * 4. Pure HTML5 Canvas Offline/Online Realtime Chart
+ * Sesuai Bab III Proposal Skripsi:
+ * 1. Database Supabase Tabel Tunggal: 'telemetry' (Tabel 3.5 Proposal)
+ * 2. Algoritma FLC Mamdani 125 Rule Base (5 Suhu x 5 Kelembapan x 5 Amonia)
+ * 3. Defuzzifikasi Centroid COA Domain [0..100] & Scaling PWM (Persamaan 3.1 & 3.2)
+ * 4. Relai Motor Konveyor Biner GPIO 27 (Amonia >= 20 ppm ATAU Kelembapan > 90%)
+ * 5. Heartbeat Watchdog Status ESP32 Online <= 10 Detik
+ * 6. Pure HTML5 Canvas Offline/Online Realtime Chart
  * ════════════════════════════════════════════════════════════════
  */
 
 (function () {
   'use strict';
 
-  // ─── AMBANG BATAS STANDAR SKRIPSI ─────────────────────────────
+  // ─── AMBANG BATAS STANDAR MIKROKLIMAT AYAM PETELUR ───────────
   const THRESHOLDS = {
-    temperature: { min: 10, max: 40, warning: 25, danger: 32 },
-    humidity:    { min: 30, max: 100, warning: 80, danger: 90 },
-    ammonia:     { min: 0,  max: 50,  warning: 20, danger: 25 }
+    temperature: { min: 10, max: 40, warning: 27, danger: 31 },
+    humidity:    { min: 20, max: 100, warning: 85, danger: 90 },
+    ammonia:     { min: 0,  max: 50,  warning: 15, danger: 20 }
   };
 
   // Baca konfigurasi dari config.js atau localStorage
@@ -40,21 +43,21 @@
     supabaseKey: storedKey,
     supabaseClient: null,
     supabaseChannels: [],
-    
+
     // Live sensor values
     sensors: {
-      temperature: 24.2,
-      humidity: 68.5,
-      ammonia: 12.4,
+      suhu: 24.2,
+      kelembapan: 68.5,
+      amonia: 12.4,
       timestamp: new Date()
     },
 
-    // Actuator states
+    // Actuator states (PWM 0-100 & Konveyor boolean)
     actuators: {
-      fanIntake: false,
-      fanExhaust: false,
-      heater: false,
-      conveyor: false,
+      pwmIntake: 0,
+      pwmExhaust: 0,
+      pwmPemanas: 0,
+      statusKonveyor: false,
       isManual: false
     },
 
@@ -68,133 +71,335 @@
     notifications: [],
     unreadCount: 0,
 
-    // ESP32 Heartbeat tracking
+    // ESP32 Heartbeat tracking (timestamp dari baris telemetry terbaru)
     lastEsp32Heartbeat: null,
 
     // Chart settings
     chartRange: '1h',
-    timerId: null
+    timerId: null,
+
+    // Rule table display mode: 'active' | 'all'
+    rulesDisplayMode: 'active',
+    rulesSearchQuery: ''
   };
 
   // ════════════════════════════════════════════════════════════════
-  // 1. FUZZY LOGIC CONTROLLER MAMDANI (27 RULE BASE)
-  // Sesuai dengan esp32_code.ino & Naskah Skripsi Dian
+  // 1. FUZZY LOGIC CONTROLLER MAMDANI (125 RULE BASE)
+  // Sesuai Bab III Proposal Skripsi Dian Lestari Kurniawati
   // ════════════════════════════════════════════════════════════════
 
+  // Fungsi keanggotaan dasar
+  function calcLeftShoulder(x, a, b) {
+    if (x <= a) return 1.0;
+    if (x >= b) return 0.0;
+    return (b - x) / (b - a);
+  }
+
+  function calcRightShoulder(x, a, b) {
+    if (x <= a) return 0.0;
+    if (x >= b) return 1.0;
+    return (x - a) / (b - a);
+  }
+
   function calcTri(x, a, b, c) {
-    if (x <= a || x >= c) return 0;
-    if (x === b) return 1;
+    if (x <= a || x >= c) return 0.0;
+    if (x === b) return 1.0;
     if (x < b) return (x - a) / (b - a);
     return (c - x) / (c - b);
   }
 
   function calcTrap(x, a, b, c, d) {
-    if (x <= a || x >= d) return 0;
-    if (x >= b && x <= c) return 1;
+    if (x <= a || x >= d) return 0.0;
+    if (x >= b && x <= c) return 1.0;
     if (x < b) return (x - a) / (b - a);
     return (d - x) / (d - c);
   }
 
+  // Nama himpunan linguistik
+  const T_LABELS = ['Sangat Dingin', 'Dingin', 'Normal', 'Panas', 'Sangat Panas'];
+  const H_LABELS = ['Sangat Kering', 'Kering', 'Normal', 'Basah', 'Sangat Basah'];
+  const A_LABELS = ['Sangat Aman', 'Aman', 'Waspada', 'Bahaya', 'Sangat Bahaya'];
+  const OUT_LABELS = ['Mati', 'Rendah', 'Sedang', 'Tinggi', 'Maksimal'];
+
+  // Definisi matriks output 125 aturan: [Intake, Exhaust, Pemanas]
+  // Nilai term output: 0=Mati (0%), 1=Rendah (25%), 2=Sedang (50%), 3=Tinggi (75%), 4=Maksimal (100%)
+  function determineRuleOutput(t, h, a) {
+    let inTerm = 0;
+    let exTerm = 0;
+    let htTerm = 0;
+
+    // 1. Pemanas (Heater): Merespons suhu dingin (SD & D)
+    if (t === 0) { // SD (Sangat Dingin)
+      htTerm = 4; // Maksimal (100%)
+    } else if (t === 1) { // D (Dingin)
+      if (a >= 3) {
+        htTerm = 3; // Tinggi (75%) — kompensasi kalor saat exhaust membuang amonia
+      } else if (h >= 3) {
+        htTerm = 2; // Sedang (50%)
+      } else {
+        htTerm = (h === 0) ? 1 : 2; // Rendah (25%) atau Sedang (50%)
+      }
+    } else { // N, P, SP (Normal / Panas / Sangat Panas)
+      htTerm = 0; // Mati (0%)
+    }
+
+    // 2. Kipas Exhaust: Membuang panas, amonia beracun, dan kelembapan tinggi
+    if (a === 4) { // ST (Sangat Bahaya)
+      exTerm = (t >= 2) ? 4 : (t === 1 ? 3 : 2);
+    } else if (a === 3) { // T (Bahaya)
+      if (t >= 3) exTerm = 4;
+      else if (t === 2) exTerm = 3;
+      else if (t === 1) exTerm = 2;
+      else exTerm = 1;
+    } else if (a === 2) { // S (Waspada)
+      if (t === 4) exTerm = 4;
+      else if (t === 3) exTerm = 3;
+      else if (t === 2) exTerm = 2;
+      else if (t === 1) exTerm = 1;
+      else exTerm = 0;
+    } else if (a === 1) { // R (Aman)
+      if (t === 4) exTerm = 4;
+      else if (t === 3) exTerm = 3;
+      else if (t === 2) {
+        if (h === 4) exTerm = 2;
+        else if (h === 3) exTerm = 1;
+        else exTerm = 0;
+      } else {
+        exTerm = 0;
+      }
+    } else { // SR (Sangat Aman)
+      if (t === 4) exTerm = 4;
+      else if (t === 3) exTerm = 3;
+      else if (t === 2) {
+        if (h === 4) exTerm = 2;
+        else if (h === 3) exTerm = 1;
+        else exTerm = 0;
+      } else {
+        exTerm = 0;
+      }
+    }
+
+    // 3. Kipas Intake: Pasokan udara segar & sirkulasi ventilasi silang
+    if (t === 4) { // SP (Sangat Panas)
+      inTerm = 4; // Maksimal (100%)
+    } else if (t === 3) { // P (Panas)
+      inTerm = (a >= 2 || h >= 3) ? 3 : 2; // Tinggi (75%) atau Sedang (50%)
+    } else if (t === 2) { // N (Normal)
+      if (a === 4) inTerm = 3; // Tinggi
+      else if (a === 3) inTerm = 2; // Sedang
+      else if (a === 2) inTerm = 1; // Rendah
+      else {
+        if (h === 4) inTerm = 2;
+        else if (h === 3) inTerm = 1;
+        else inTerm = 0;
+      }
+    } else if (t === 1) { // D (Dingin)
+      inTerm = (a >= 3) ? 1 : 0; // Sirkulasi minimal saat amonia bahaya
+    } else { // SD (Sangat Dingin)
+      inTerm = 0; // Mati (cegah hembusan dingin langsung)
+    }
+
+    return { inTerm, exTerm, htTerm };
+  }
+
+  // Bangun pustaka 125 aturan sekali saat startup
+  const RULE_BASE_125 = [];
+  let ruleCounter = 1;
+  for (let t = 0; t < 5; t++) {
+    for (let h = 0; h < 5; h++) {
+      for (let a = 0; a < 5; a++) {
+        const out = determineRuleOutput(t, h, a);
+        RULE_BASE_125.push({
+          id: ruleCounter++,
+          tIdx: t,
+          hIdx: h,
+          aIdx: a,
+          tName: T_LABELS[t],
+          hName: H_LABELS[h],
+          aName: A_LABELS[a],
+          inTerm: out.inTerm,
+          exTerm: out.exTerm,
+          htTerm: out.htTerm,
+          inName: OUT_LABELS[out.inTerm],
+          exName: OUT_LABELS[out.exTerm],
+          htName: OUT_LABELS[out.htTerm],
+          antecedent: `IF Suhu=${T_LABELS[t]} AND Kelembapan=${H_LABELS[h]} AND Amonia=${A_LABELS[a]}`,
+          consequent: `THEN Intake=${OUT_LABELS[out.inTerm]}, Exhaust=${OUT_LABELS[out.exTerm]}, Pemanas=${OUT_LABELS[out.htTerm]}`
+        });
+      }
+    }
+  }
+
+  // ─── DEFUZZIFIKASI CENTROID COA (Persamaan 3.1 & 3.2) ────────
+  function defuzzifyCentroid(betas) {
+    const sumBeta = betas[0] + betas[1] + betas[2] + betas[3] + betas[4];
+    if (sumBeta <= 0.0001) {
+      return { yStar: 8.3, pwm: 0 };
+    }
+
+    let num = 0;
+    let den = 0;
+    const dy = 0.5;
+
+    for (let y = 0; y <= 100; y += dy) {
+      // 5 fungsi keanggotaan output domain [0..100]:
+      // 0: Mati (Segitiga Siku-Siku 0..25)
+      let m0 = (y <= 25) ? ((25 - y) / 25) : 0;
+
+      // 1: Rendah (Segitiga 0..25..50)
+      let m1 = 0;
+      if (y < 25) m1 = y / 25;
+      else if (y <= 50) m1 = (50 - y) / 25;
+
+      // 2: Sedang (Segitiga 25..50..75)
+      let m2 = 0;
+      if (y >= 25 && y < 50) m2 = (y - 25) / 25;
+      else if (y >= 50 && y <= 75) m2 = (75 - y) / 25;
+
+      // 3: Tinggi (Segitiga 50..75..100)
+      let m3 = 0;
+      if (y >= 50 && y < 75) m3 = (y - 50) / 25;
+      else if (y >= 75 && y <= 100) m3 = (100 - y) / 25;
+
+      // 4: Maksimal (Segitiga Siku-Siku 75..100)
+      let m4 = (y >= 75) ? ((y - 75) / 25) : 0;
+
+      // Komposisi Mamdani: MAX dari MIN implikasi
+      const mu = Math.max(
+        Math.min(betas[0], m0),
+        Math.min(betas[1], m1),
+        Math.min(betas[2], m2),
+        Math.min(betas[3], m3),
+        Math.min(betas[4], m4)
+      );
+
+      num += y * mu * dy;
+      den += mu * dy;
+    }
+
+    if (den <= 0.00001) {
+      return { yStar: 8.3, pwm: 0 };
+    }
+
+    // Persamaan 3.1: Centroid COA
+    const yStar = num / den;
+
+    // Persamaan 3.2: Scaling PWM dari domain [8.3 .. 91.7] ke [0 .. 100]
+    const pwmRaw = ((yStar - 8.3) / (91.7 - 8.3)) * 100;
+    const pwm = Math.max(0, Math.min(100, Math.round(pwmRaw)));
+
+    return { yStar: +yStar.toFixed(2), pwm };
+  }
+
+  // ─── MESIN UTAMA FLC MAMDANI 125 RULE ─────────────────────────
   function computeFuzzyMamdani(temp, humid, nh3) {
-    // 1. Fuzzifikasi Suhu (°C)
-    const tD = calcTrap(temp, 0, 0, 18, 23);     // Dingin
-    const tN = calcTri(temp, 18, 23, 28);        // Normal
-    const tP = calcTrap(temp, 23, 28, 100, 100);  // Panas
-
-    // 2. Fuzzifikasi Kelembapan (%)
-    const hK = calcTrap(humid, 0, 0, 50, 70);    // Kering
-    const hN = calcTri(humid, 50, 70, 85);       // Normal
-    const hB = calcTrap(humid, 70, 85, 100, 100); // Basah
-
-    // 3. Fuzzifikasi Amonia (ppm)
-    const nA = calcTrap(nh3, 0, 0, 10, 18);      // Aman
-    const nW = calcTri(nh3, 10, 18, 25);         // Waspada
-    const nB = calcTrap(nh3, 18, 25, 100, 100);   // Bahaya
-
-    // 4. Evaluasi 27 Rule Base
-    const rules = [
-      // Dingin (tD)
-      { id:1,  t:tD, h:hK, a:nA, fin:false, fout:false, htr:true,  cnv:false, tN:'Dingin', hN:'Kering', aN:'Aman' },
-      { id:2,  t:tD, h:hK, a:nW, fin:true,  fout:true,  htr:true,  cnv:false, tN:'Dingin', hN:'Kering', aN:'Waspada' },
-      { id:3,  t:tD, h:hK, a:nB, fin:true,  fout:true,  htr:true,  cnv:true,  tN:'Dingin', hN:'Kering', aN:'Bahaya' },
-      { id:4,  t:tD, h:hN, a:nA, fin:false, fout:false, htr:true,  cnv:false, tN:'Dingin', hN:'Normal', aN:'Aman' },
-      { id:5,  t:tD, h:hN, a:nW, fin:true,  fout:true,  htr:true,  cnv:false, tN:'Dingin', hN:'Normal', aN:'Waspada' },
-      { id:6,  t:tD, h:hN, a:nB, fin:true,  fout:true,  htr:true,  cnv:true,  tN:'Dingin', hN:'Normal', aN:'Bahaya' },
-      { id:7,  t:tD, h:hB, a:nA, fin:true,  fout:true,  htr:true,  cnv:false, tN:'Dingin', hN:'Basah',  aN:'Aman' },
-      { id:8,  t:tD, h:hB, a:nW, fin:true,  fout:true,  htr:true,  cnv:false, tN:'Dingin', hN:'Basah',  aN:'Waspada' },
-      { id:9,  t:tD, h:hB, a:nB, fin:true,  fout:true,  htr:true,  cnv:true,  tN:'Dingin', hN:'Basah',  aN:'Bahaya' },
-
-      // Normal (tN)
-      { id:10, t:tN, h:hK, a:nA, fin:false, fout:false, htr:false, cnv:false, tN:'Normal', hN:'Kering', aN:'Aman' },
-      { id:11, t:tN, h:hK, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Normal', hN:'Kering', aN:'Waspada' },
-      { id:12, t:tN, h:hK, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Normal', hN:'Kering', aN:'Bahaya' },
-      { id:13, t:tN, h:hN, a:nA, fin:false, fout:false, htr:false, cnv:false, tN:'Normal', hN:'Normal', aN:'Aman' },
-      { id:14, t:tN, h:hN, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Normal', hN:'Normal', aN:'Waspada' },
-      { id:15, t:tN, h:hN, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Normal', hN:'Normal', aN:'Bahaya' },
-      { id:16, t:tN, h:hB, a:nA, fin:true,  fout:true,  htr:false, cnv:false, tN:'Normal', hN:'Basah',  aN:'Aman' },
-      { id:17, t:tN, h:hB, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Normal', hN:'Basah',  aN:'Waspada' },
-      { id:18, t:tN, h:hB, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Normal', hN:'Basah',  aN:'Bahaya' },
-
-      // Panas (tP)
-      { id:19, t:tP, h:hK, a:nA, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Kering', aN:'Aman' },
-      { id:20, t:tP, h:hK, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Kering', aN:'Waspada' },
-      { id:21, t:tP, h:hK, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Panas',  hN:'Kering', aN:'Bahaya' },
-      { id:22, t:tP, h:hN, a:nA, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Normal', aN:'Aman' },
-      { id:23, t:tP, h:hN, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Normal', aN:'Waspada' },
-      { id:24, t:tP, h:hN, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Panas',  hN:'Normal', aN:'Bahaya' },
-      { id:25, t:tP, h:hB, a:nA, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Basah',  aN:'Aman' },
-      { id:26, t:tP, h:hB, a:nW, fin:true,  fout:true,  htr:false, cnv:false, tN:'Panas',  hN:'Basah',  aN:'Waspada' },
-      { id:27, t:tP, h:hB, a:nB, fin:true,  fout:true,  htr:false, cnv:true,  tN:'Panas',  hN:'Basah',  aN:'Bahaya' }
+    // 1. Fuzzifikasi Suhu (10–40 °C)
+    const muT = [
+      calcLeftShoulder(temp, 14, 18),        // SD: Sangat Dingin [10, 10, 14, 18]
+      calcTri(temp, 14, 18, 20),             // D: Dingin [14, 18, 18, 20]
+      calcTrap(temp, 18, 20, 25, 27),        // N: Normal [18, 20, 25, 27]
+      calcTri(temp, 25, 27, 31),             // P: Panas [25, 27, 27, 31]
+      calcRightShoulder(temp, 27, 31)        // SP: Sangat Panas [27, 31, 40, 40]
     ];
 
-    // Hitung derajat keanggotaan rule (MIN)
-    const evaluated = rules.map(r => {
-      const alpha = Math.min(r.t, r.h, r.a);
-      const antecedent = `IF Suhu=${r.tN} AND Kelembapan=${r.hN} AND Amonia=${r.aN}`;
-      const consequent = `THEN FanIn=${r.fin ? 'ON' : 'OFF'}, FanOut=${r.fout ? 'ON' : 'OFF'}, Heater=${r.htr ? 'ON' : 'OFF'}, Conv=${r.cnv ? 'ON' : 'OFF'}`;
-      return { id: r.id, antecedent, consequent, alpha, fin: r.fin, fout: r.fout, htr: r.htr, cnv: r.cnv };
-    });
+    // 2. Fuzzifikasi Kelembapan (20–100 %RH)
+    const muH = [
+      calcLeftShoulder(humid, 40, 50),       // SK: Sangat Kering [20, 20, 40, 50]
+      calcTri(humid, 40, 50, 60),            // K: Kering [40, 50, 50, 60]
+      calcTrap(humid, 50, 60, 80, 85),       // N: Normal [50, 60, 80, 85]
+      calcTri(humid, 80, 85, 92),            // B: Basah [80, 85, 85, 92]
+      calcRightShoulder(humid, 85, 92)       // SB: Sangat Basah [85, 92, 100, 100]
+    ];
 
-    const activeRules = evaluated.filter(r => r.alpha > 0.001).sort((a, b) => b.alpha - a.alpha);
-    const sumAlpha = activeRules.reduce((s, r) => s + r.alpha, 0) || 1;
+    // 3. Fuzzifikasi Gas Amonia (0–50 ppm)
+    const muA = [
+      calcLeftShoulder(nh3, 5, 10),          // SR: Sangat Aman [0, 0, 5, 10]
+      calcTri(nh3, 5, 10, 15),               // R: Aman [5, 10, 10, 15]
+      calcTri(nh3, 10, 15, 20),              // S: Waspada [10, 15, 15, 20]
+      calcTri(nh3, 15, 20, 30),              // T: Bahaya [15, 20, 20, 30]
+      calcRightShoulder(nh3, 20, 30)         // ST: Sangat Bahaya [20, 30, 50, 50]
+    ];
 
-    // Defuzzifikasi Sugeno/Mamdani Weighted Average (0 - 100%)
-    const fanInPct  = Math.round((activeRules.filter(r => r.fin).reduce((s, r) => s + r.alpha, 0) / sumAlpha) * 100);
-    const fanOutPct = Math.round((activeRules.filter(r => r.fout).reduce((s, r) => s + r.alpha, 0) / sumAlpha) * 100);
-    const heaterPct = Math.round((activeRules.filter(r => r.htr).reduce((s, r) => s + r.alpha, 0) / sumAlpha) * 100);
-    const convPct   = Math.round((activeRules.filter(r => r.cnv).reduce((s, r) => s + r.alpha, 0) / sumAlpha) * 100);
+    // Array clipping alpha untuk 5 term output masing-masing aktuator
+    const betasIn = [0, 0, 0, 0, 0];
+    const betasEx = [0, 0, 0, 0, 0];
+    const betasHt = [0, 0, 0, 0, 0];
 
-    // Penentuan Label Kondisi Lingkungan
-    const isDanger = nB > 0.4 || tP > 0.6;
-    const isWarning = nW > 0.4 || tP > 0.2 || hB > 0.5;
-    const label = isDanger ? 'Kondisi Bahaya' : isWarning ? 'Kondisi Waspada' : 'Kondisi Normal';
+    const evaluatedRules = [];
+
+    // 4. Evaluasi 125 Aturan Mamdani (MIN antecedent & MAX aggregation)
+    for (let i = 0; i < RULE_BASE_125.length; i++) {
+      const r = RULE_BASE_125[i];
+      const alpha = Math.min(muT[r.tIdx], muH[r.hIdx], muA[r.aIdx]);
+
+      if (alpha > 0.001) {
+        evaluatedRules.push({
+          id: r.id,
+          antecedent: r.antecedent,
+          consequent: r.consequent,
+          alpha: alpha,
+          inTerm: r.inTerm,
+          exTerm: r.exTerm,
+          htTerm: r.htTerm
+        });
+
+        // Agregasi MAX
+        if (alpha > betasIn[r.inTerm]) betasIn[r.inTerm] = alpha;
+        if (alpha > betasEx[r.exTerm]) betasEx[r.exTerm] = alpha;
+        if (alpha > betasHt[r.htTerm]) betasHt[r.htTerm] = alpha;
+      }
+    }
+
+    // Urutkan aturan aktif berdasarkan alpha tertinggi
+    evaluatedRules.sort((a, b) => b.alpha - a.alpha);
+
+    // 5. Defuzzifikasi Centroid COA & Scaling PWM
+    const resIn = defuzzifyCentroid(betasIn);
+    const resEx = defuzzifyCentroid(betasEx);
+    const resHt = defuzzifyCentroid(betasHt);
+
+    // 6. Logika Relai Biner Motor Konveyor (GPIO 27)
+    // Sesuai Proposal: Aktif jika Amonia >= 20 ppm ATAU Kelembapan > 90%
+    const conveyorState = (nh3 >= 20.0 || humid > 90.0);
+
+    // 7. Penentuan Label Kondisi Mikroklimat Kandang
+    const isDanger = nh3 >= 20.0 || temp >= 31.0 || temp <= 14.0;
+    const isWarning = nh3 >= 15.0 || temp >= 27.0 || temp <= 18.0 || humid >= 85.0;
+    const conditionLabel = isDanger ? 'Kondisi Bahaya' : (isWarning ? 'Kondisi Waspada' : 'Kondisi Normal');
+    const statusClass = isDanger ? 'danger' : (isWarning ? 'warning' : 'normal');
 
     return {
       membership: {
-        temp: { Dingin: tD, Normal: tN, Panas: tP },
-        humid: { Kering: hK, Normal: hN, Basah: hB },
-        ammonia: { Aman: nA, Waspada: nW, Bahaya: nB }
+        temp: { SD: muT[0], D: muT[1], N: muT[2], P: muT[3], SP: muT[4] },
+        humid: { SK: muH[0], K: muH[1], N: muH[2], B: muH[3], SB: muH[4] },
+        ammonia: { SR: muA[0], R: muA[1], S: muA[2], T: muA[3], ST: muA[4] }
       },
-      activeRules,
+      activeRules: evaluatedRules,
+      centroid: {
+        fanIntake: resIn.yStar,
+        fanExhaust: resEx.yStar,
+        heater: resHt.yStar
+      },
       crisp: {
-        fanIntake: fanInPct,
-        fanExhaust: fanOutPct,
-        heater: heaterPct,
-        conveyor: convPct
+        fanIntake: resIn.pwm,
+        fanExhaust: resEx.pwm,
+        heater: resHt.pwm,
+        conveyor: conveyorState ? 100 : 0
       },
       states: {
-        fanIntake: fanInPct > 50,
-        fanExhaust: fanOutPct > 50,
-        heater: heaterPct > 50,
-        conveyor: convPct > 50
+        fanIntake: resIn.pwm > 0,
+        fanExhaust: resEx.pwm > 0,
+        heater: resHt.pwm > 0,
+        conveyor: conveyorState
       },
-      conditionLabel: label,
-      statusClass: isDanger ? 'danger' : isWarning ? 'warning' : 'normal'
+      conditionLabel,
+      statusClass
     };
   }
 
   // ════════════════════════════════════════════════════════════════
-  // 2. SUPABASE REALTIME & DATA POLLING ENGINE
+  // 2. SUPABASE REALTIME & DATABASE ENGINE (TABEL TUNGGAL 'telemetry')
+  // Sesuai Tabel 3.5 Proposal Skripsi
   // ════════════════════════════════════════════════════════════════
 
   function initMockHistory() {
@@ -202,10 +407,22 @@
     const now = Date.now();
     for (let i = 30; i >= 0; i--) {
       const time = new Date(now - i * 60 * 1000);
-      const temp = +(22 + Math.sin(i * 0.18) * 4 + (Math.random() - 0.5) * 1).toFixed(1);
-      const humid = +(68 + Math.cos(i * 0.12) * 8 + (Math.random() - 0.5) * 2).toFixed(1);
-      const ammonia = +(13 + Math.sin(i * 0.25) * 5 + (Math.random() - 0.5) * 1.5).toFixed(1);
-      hist.push({ time, temp, humid, ammonia });
+      const suhu = +(23.5 + Math.sin(i * 0.18) * 3 + (Math.random() - 0.5) * 0.8).toFixed(1);
+      const kelembapan = +(68.0 + Math.cos(i * 0.12) * 6 + (Math.random() - 0.5) * 1.5).toFixed(1);
+      const amonia = +(12.5 + Math.sin(i * 0.25) * 4 + (Math.random() - 0.5) * 1.0).toFixed(1);
+
+      // Hitung simulasi aktuator
+      const fSim = computeFuzzyMamdani(suhu, kelembapan, amonia);
+      hist.push({
+        time,
+        suhu: Number(suhu),
+        kelembapan: Number(kelembapan),
+        amonia: Number(amonia),
+        pwm_intake: fSim.crisp.fanIntake,
+        pwm_exhaust: fSim.crisp.fanExhaust,
+        pwm_pemanas: fSim.crisp.heater,
+        status_konveyor: fSim.states.conveyor
+      });
     }
     state.history = hist;
   }
@@ -213,13 +430,18 @@
   function tickDemoData() {
     const now = new Date();
     const t = now.getTime();
-    
-    // Smooth oscillation mimicking chicken coop day/night & ventilation cycles
-    const temp = +(23.5 + Math.sin(t / 25000) * 5 + (Math.random() - 0.5) * 0.8).toFixed(1);
-    const humid = +(69.0 + Math.cos(t / 20000) * 10 + (Math.random() - 0.5) * 1.2).toFixed(1);
-    const ammonia = +(14.2 + Math.sin(t / 18000) * 7 + (Math.random() - 0.5) * 1.0).toFixed(1);
 
-    updateSensorData(temp, humid, ammonia);
+    // Osilasi halus mensimulasikan lingkungan kandang ayam petelur
+    const suhu = +(23.8 + Math.sin(t / 25000) * 4.5 + (Math.random() - 0.5) * 0.6).toFixed(1);
+    const kelembapan = +(67.5 + Math.cos(t / 20000) * 8.0 + (Math.random() - 0.5) * 1.0).toFixed(1);
+    const amonia = +(13.2 + Math.sin(t / 18000) * 5.5 + (Math.random() - 0.5) * 0.8).toFixed(1);
+
+    updateTelemetryData({
+      suhu,
+      kelembapan,
+      amonia,
+      created_at: now.toISOString()
+    });
   }
 
   async function initSupabaseClient() {
@@ -239,33 +461,32 @@
     try {
       state.supabaseClient = window.supabase.createClient(state.supabaseUrl, state.supabaseKey);
 
-      // 1. Ambil pembacaan sensor terkini untuk menguji koneksi database
+      // 1. Ambil data telemetri terkini dari tabel tunggal 'telemetry'
       const { data: latestRows, error: errLatest } = await state.supabaseClient
-        .from('sensor_readings')
+        .from('telemetry')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(1);
 
       if (errLatest) {
-        console.error('Error koneksi Supabase:', errLatest);
-        setConnectionStatus(false, 'Database: Terputus', errLatest.message || 'Gagal query Supabase');
+        console.error('Error query tabel telemetry Supabase:', errLatest);
+        setConnectionStatus(false, 'Database: Terputus', errLatest.message || 'Gagal query tabel telemetry');
         return false;
       }
 
-      // Database berhasil terhubung!
       setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Online)');
 
       if (latestRows && latestRows.length > 0) {
         const latest = latestRows[0];
-        updateSensorData(latest.temperature, latest.humidity, latest.ammonia, latest.created_at);
+        updateTelemetryData(latest);
       } else {
-        console.log('Tabel sensor_readings masih kosong. Menunggu data masuk dari ESP32...');
+        console.log('Tabel telemetry masih kosong. Menunggu data telemetri pertama dari ESP32...');
       }
 
-      // 2. Ambil riwayat sensor 24 jam terakhir untuk grafik
+      // 2. Ambil riwayat telemetri 24 jam terakhir untuk grafik
       const cut = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
       const { data: histData, error: errHist } = await state.supabaseClient
-        .from('sensor_readings')
+        .from('telemetry')
         .select('*')
         .gte('created_at', cut)
         .order('created_at', { ascending: true })
@@ -274,39 +495,27 @@
       if (!errHist && histData && histData.length > 0) {
         state.history = histData.map(d => ({
           time: new Date(d.created_at),
-          temp: d.temperature,
-          humid: d.humidity,
-          ammonia: d.ammonia
+          suhu: Number(d.suhu),
+          kelembapan: Number(d.kelembapan),
+          amonia: Number(d.amonia),
+          pwm_intake: Number(d.pwm_intake || 0),
+          pwm_exhaust: Number(d.pwm_exhaust || 0),
+          pwm_pemanas: Number(d.pwm_pemanas || 0),
+          status_konveyor: Boolean(d.status_konveyor)
         }));
         if (state.currentView === 'history') renderCanvasChart();
       }
 
-      // 3. Ambil status aktuator terkini
-      const { data: actRows } = await state.supabaseClient
-        .from('actuator_status')
-        .select('*')
-        .order('updated_at', { ascending: false })
-        .limit(1);
-
-      if (actRows && actRows.length > 0) {
-        const actData = actRows[0];
-        state.actuators.fanIntake = actData.fan_intake;
-        state.actuators.fanExhaust = actData.fan_exhaust;
-        state.actuators.heater = actData.heater;
-        state.actuators.conveyor = actData.conveyor;
-        renderUI();
-      }
-
-      // 4. Langganan Supabase Realtime WebSocket Channel
+      // 3. Berlangganan Supabase Realtime WebSocket ke tabel tunggal 'telemetry'
       state.supabaseChannels.forEach(ch => state.supabaseClient.removeChannel(ch));
       state.supabaseChannels = [];
 
-      const chSensor = state.supabaseClient
-        .channel('realtime_sensor_readings')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
+      const chTelemetry = state.supabaseClient
+        .channel('realtime_telemetry')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'telemetry' }, (payload) => {
           const row = payload.new;
-          console.log('[Supabase Realtime] Sensor masuk:', row);
-          updateSensorData(row.temperature, row.humidity, row.ammonia, row.created_at);
+          console.log('[Supabase Realtime] Telemetri masuk:', row);
+          updateTelemetryData(row);
           setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
         })
         .subscribe((status) => {
@@ -317,20 +526,7 @@
           }
         });
 
-      const chActuator = state.supabaseClient
-        .channel('realtime_actuator_status')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'actuator_status' }, (payload) => {
-          const row = payload.new;
-          console.log('[Supabase Realtime] Aktuator update:', row);
-          state.actuators.fanIntake = row.fan_intake;
-          state.actuators.fanExhaust = row.fan_exhaust;
-          state.actuators.heater = row.heater;
-          state.actuators.conveyor = row.conveyor;
-          renderUI();
-        })
-        .subscribe();
-
-      state.supabaseChannels = [chSensor, chActuator];
+      state.supabaseChannels = [chTelemetry];
       return true;
     } catch (err) {
       console.error('Inisialisasi Supabase gagal:', err);
@@ -348,51 +544,77 @@
 
       if (!res.ok) throw new Error('ESP32 HTTP Error');
       const data = await res.json();
-      
-      updateSensorData(data.temp, data.humid, data.ammonia, new Date());
+
+      updateTelemetryData({
+        suhu: data.suhu !== undefined ? data.suhu : data.temp,
+        kelembapan: data.kelembapan !== undefined ? data.kelembapan : data.humid,
+        amonia: data.amonia !== undefined ? data.amonia : data.ammonia,
+        pwm_intake: data.pwm_intake,
+        pwm_exhaust: data.pwm_exhaust,
+        pwm_pemanas: data.pwm_pemanas,
+        status_konveyor: data.status_konveyor,
+        created_at: new Date().toISOString()
+      });
+
       setConnectionStatus(true, 'ESP32 Terhubung');
     } catch (err) {
-      console.warn('Gagal koneksi ke ESP32:', err.message);
+      console.warn('Gagal koneksi langsung ke ESP32:', err.message);
       setConnectionStatus(false, 'ESP32 Offline');
     }
   }
 
-  function updateSensorData(temp, humid, ammonia, timestamp) {
-    state.sensors.temperature = Number(temp);
-    state.sensors.humidity = Number(humid);
-    state.sensors.ammonia = Number(ammonia);
-    state.sensors.timestamp = timestamp ? new Date(timestamp) : new Date();
+  // ─── UPDATE STATE TELEMETRI ───────────────────────────────────
+  function updateTelemetryData(row) {
+    const suhu = Number(row.suhu !== undefined ? row.suhu : row.temperature);
+    const kelembapan = Number(row.kelembapan !== undefined ? row.kelembapan : row.humidity);
+    const amonia = Number(row.amonia !== undefined ? row.amonia : row.ammonia);
+    const timestamp = row.created_at ? new Date(row.created_at) : new Date();
 
+    state.sensors.suhu = suhu;
+    state.sensors.kelembapan = kelembapan;
+    state.sensors.amonia = amonia;
+    state.sensors.timestamp = timestamp;
+
+    // Catat heartbeat ESP32
     if (state.connectionMode === 'demo') {
       state.lastEsp32Heartbeat = new Date();
-    } else if (timestamp) {
-      state.lastEsp32Heartbeat = new Date(timestamp);
+    } else if (row.created_at) {
+      state.lastEsp32Heartbeat = new Date(row.created_at);
     }
 
     evaluateEsp32Status();
 
-    // Jalankan kalkulasi Fuzzy Mamdani
-    state.fuzzy = computeFuzzyMamdani(temp, humid, ammonia);
+    // Jalankan kalkulasi Fuzzy Mamdani 125 rules di browser
+    state.fuzzy = computeFuzzyMamdani(suhu, kelembapan, amonia);
 
-    // Update aktuator otomatis jika tidak dalam mode manual
-    if (!state.actuators.isManual) {
-      state.actuators.fanIntake = state.fuzzy.states.fanIntake;
-      state.actuators.fanExhaust = state.fuzzy.states.fanExhaust;
-      state.actuators.heater = state.fuzzy.states.heater;
-      state.actuators.conveyor = state.fuzzy.states.conveyor;
+    // Jika baris dari ESP32 memuat nilai aktuator nyata dari database, gunakan nilai tersebut
+    if (row.pwm_intake !== undefined && row.pwm_intake !== null && !state.actuators.isManual) {
+      state.actuators.pwmIntake = Number(row.pwm_intake);
+      state.actuators.pwmExhaust = Number(row.pwm_exhaust);
+      state.actuators.pwmPemanas = Number(row.pwm_pemanas);
+      state.actuators.statusKonveyor = Boolean(row.status_konveyor);
+    } else if (!state.actuators.isManual) {
+      state.actuators.pwmIntake = state.fuzzy.crisp.fanIntake;
+      state.actuators.pwmExhaust = state.fuzzy.crisp.fanExhaust;
+      state.actuators.pwmPemanas = state.fuzzy.crisp.heater;
+      state.actuators.statusKonveyor = state.fuzzy.states.conveyor;
     }
 
     // Rekam histori grafik (max 60 titik)
     state.history.push({
-      time: new Date(),
-      temp: Number(temp),
-      humid: Number(humid),
-      ammonia: Number(ammonia)
+      time: timestamp,
+      suhu,
+      kelembapan,
+      amonia,
+      pwm_intake: state.actuators.pwmIntake,
+      pwm_exhaust: state.actuators.pwmExhaust,
+      pwm_pemanas: state.actuators.pwmPemanas,
+      status_konveyor: state.actuators.statusKonveyor
     });
     if (state.history.length > 60) state.history.shift();
 
-    // Cek alarm peringatan
-    checkAlerts(temp, humid, ammonia);
+    // Evaluasi alarm peringatan
+    checkAlerts(suhu, kelembapan, amonia);
 
     // Refresh UI
     renderUI();
@@ -403,19 +625,21 @@
     const ts = new Date().toLocaleTimeString('id-ID');
 
     if (a >= THRESHOLDS.ammonia.danger) {
-      alerts.push({ type: 'danger', msg: `Gas Amonia Kritis: ${a} ppm (Ambang Bahaya > 25 ppm)`, time: ts });
+      alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a} ppm (Ambang Batas >= 20 ppm)`, time: ts });
     } else if (a >= THRESHOLDS.ammonia.warning) {
-      alerts.push({ type: 'warning', msg: `Gas Amonia Meningkat: ${a} ppm (Waspada > 20 ppm)`, time: ts });
+      alerts.push({ type: 'warning', msg: `Gas Amonia Meningkat: ${a} ppm (Waspada >= 15 ppm)`, time: ts });
     }
 
     if (t >= THRESHOLDS.temperature.danger) {
-      alerts.push({ type: 'danger', msg: `Suhu Udara Ekstrem: ${t}°C (Risiko Heat Stress Tinggi)`, time: ts });
+      alerts.push({ type: 'danger', msg: `Suhu Udara Ekstrem: ${t}°C (Risiko Heat Stress Tinggi > 31°C)`, time: ts });
     } else if (t >= THRESHOLDS.temperature.warning) {
-      alerts.push({ type: 'warning', msg: `Suhu di atas zona nyaman: ${t}°C (Ideal 20–25°C)`, time: ts });
+      alerts.push({ type: 'warning', msg: `Suhu Udara Panas: ${t}°C (Ideal 20–25°C)`, time: ts });
+    } else if (t <= 14.0) {
+      alerts.push({ type: 'danger', msg: `Suhu Sangat Dingin: ${t}°C (Risiko Hipotermia Ayam)`, time: ts });
     }
 
     if (h >= THRESHOLDS.humidity.danger) {
-      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h}% (Kandang Terlalu Basah)`, time: ts });
+      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h}% (Kandang Terlalu Basah > 90%)`, time: ts });
     }
 
     if (alerts.length > 0) {
@@ -458,7 +682,7 @@
         if (dbSub) dbSub.textContent = subText || 'Supabase Cloud';
       } else if (online) {
         dbText.textContent = text || 'Database: Terhubung';
-        if (dbSub) dbSub.textContent = subText || 'Supabase Cloud (Live)';
+        if (dbSub) dbSub.textContent = subText || 'Supabase Cloud (Tabel telemetry)';
       } else {
         dbText.textContent = text || 'Database: Terputus';
         if (dbSub) dbSub.textContent = subText || 'Gagal Konek Supabase';
@@ -468,7 +692,7 @@
     evaluateEsp32Status();
   }
 
-  // Evaluasi koneksi mikrokontroler ESP32
+  // ─── WATCHDOG KONEKSI ESP32 (Sesuai Permintaan: Online jika <= 10 detik) ───
   function evaluateEsp32Status() {
     const dot = document.getElementById('esp32-dot');
     const text = document.getElementById('esp32-text');
@@ -502,36 +726,27 @@
       return;
     }
 
+    // Hitung selisih waktu telemetri terhadap waktu sekarang (dalam detik)
     const diff = Math.max(0, Math.round((Date.now() - state.lastEsp32Heartbeat.getTime()) / 1000));
 
-    if (diff <= 15) {
-      // Data masuk secara normal (ESP32 mengirim tiap 3-5 detik)
+    if (diff <= 10) {
+      // ONLINE: Data telemetri diterima dalam 10 detik terakhir
       dot.className = 'pulse-dot';
       text.textContent = 'ESP32: Terhubung (Online)';
       if (timeEl) timeEl.textContent = diff <= 1 ? '(Live)' : `(${diff}d lalu)`;
       if (chipDot) chipDot.className = 'pulse-dot';
       if (chipText) {
-        chipText.textContent = `ESP32: Terhubung / Online ${diff <= 1 ? '(Live)' : '(' + diff + 's lalu)'}`;
+        chipText.textContent = `ESP32: Terhubung (Online) ${diff <= 1 ? '(Live)' : '(' + diff + 's lalu)'}`;
         chipText.style.color = 'var(--success)';
       }
-    } else if (diff <= 45) {
-      // Sedikit terlambat / sinyal wifi kandang lemah
-      dot.className = 'pulse-dot demo';
-      text.textContent = 'ESP32: Sinyal Lambat';
-      if (timeEl) timeEl.textContent = `(${diff}d lalu)`;
-      if (chipDot) chipDot.className = 'pulse-dot demo';
-      if (chipText) {
-        chipText.textContent = `ESP32: Sinyal Lambat (${diff}s lalu)`;
-        chipText.style.color = 'var(--warning)';
-      }
     } else {
-      // Lebih dari 45 detik tidak ada telemetri baru -> Alat mati/terputus
+      // OFFLINE: Lebih dari 10 detik tanpa data baru
       dot.className = 'pulse-dot offline';
       text.textContent = 'ESP32: Terputus (Offline)';
-      if (timeEl) timeEl.textContent = `(Mati sejak ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
+      if (timeEl) timeEl.textContent = `(${diff}d lalu)`;
       if (chipDot) chipDot.className = 'pulse-dot offline';
       if (chipText) {
-        chipText.textContent = `ESP32: Terputus / Offline (Terakhir ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
+        chipText.textContent = `ESP32: Terputus (Offline) (Terakhir ${state.lastEsp32Heartbeat.toLocaleTimeString('id-ID')})`;
         chipText.style.color = 'var(--danger)';
       }
     }
@@ -552,7 +767,7 @@
     const f = state.fuzzy;
     if (!f) return;
 
-    // Header updates
+    // Header Clock
     const clockEl = document.getElementById('header-clock');
     if (clockEl) clockEl.textContent = s.timestamp.toLocaleTimeString('id-ID');
 
@@ -564,23 +779,23 @@
     }
 
     // ─── 1. Sensor Cards ───
-    updateCard('temp', s.temperature, THRESHOLDS.temperature, '°C');
-    updateCard('humid', s.humidity, THRESHOLDS.humidity, '%');
-    updateCard('ammonia', s.ammonia, THRESHOLDS.ammonia, 'ppm');
+    updateCard('temp', s.suhu, THRESHOLDS.temperature, '°C');
+    updateCard('humid', s.kelembapan, THRESHOLDS.humidity, '%');
+    updateCard('ammonia', s.amonia, THRESHOLDS.ammonia, 'ppm');
 
-    // ─── 2. Actuator Cards ───
-    updateActuatorCard('fan-in', state.actuators.fanIntake, f.crisp.fanIntake);
-    updateActuatorCard('fan-out', state.actuators.fanExhaust, f.crisp.fanExhaust);
-    updateActuatorCard('heater', state.actuators.heater, f.crisp.heater);
-    updateActuatorCard('conveyor', state.actuators.conveyor, f.crisp.conveyor);
+    // ─── 2. Actuator Cards (Dashboard) ───
+    updateActuatorCard('fan-in', state.actuators.pwmIntake > 0, state.actuators.pwmIntake);
+    updateActuatorCard('fan-out', state.actuators.pwmExhaust > 0, state.actuators.pwmExhaust);
+    updateActuatorCard('heater', state.actuators.pwmPemanas > 0, state.actuators.pwmPemanas);
+    updateActuatorCard('conveyor', state.actuators.statusKonveyor, state.actuators.statusKonveyor ? 100 : 0);
 
-    // ─── 3. Fuzzy Membership Bars (Tab Fuzzy & Tab Dashboard) ───
+    // ─── 3. Fuzzifikasi 5 Himpunan Keanggotaan ───
     updateMembershipDisplay(f.membership);
 
-    // ─── 4. Active Rules Table ───
-    renderActiveRules(f.activeRules);
+    // ─── 4. Tabel Aturan Mamdani ───
+    renderRulesTable();
 
-    // ─── 5. Notification Bell ───
+    // ─── 5. Notification Bell Badge ───
     const notifBadge = document.getElementById('notif-badge');
     if (notifBadge) {
       if (state.unreadCount > 0) {
@@ -591,7 +806,7 @@
       }
     }
 
-    // ─── 6. History Chart (jika tab history aktif) ───
+    // ─── 6. History Chart (Jika tab Riwayat Grafik aktif) ───
     if (state.currentView === 'history') {
       renderCanvasChart();
     }
@@ -608,7 +823,7 @@
 
     if (badgeEl) {
       badgeEl.className = `card-badge ${status}`;
-      badgeEl.textContent = status === 'danger' ? 'BAHAYA' : status === 'warning' ? 'WASPADA' : 'NORMAL';
+      badgeEl.textContent = status === 'danger' ? 'BAHAYA' : (status === 'warning' ? 'WASPADA' : 'NORMAL');
     }
 
     if (barEl) {
@@ -642,50 +857,99 @@
     }
   }
 
+  // Update visualisasi 15 kurva himpunan keanggotaan
   function updateMembershipDisplay(mem) {
-    setBarVal('m-temp-dingin', mem.temp.Dingin);
-    setBarVal('m-temp-normal', mem.temp.Normal);
-    setBarVal('m-temp-panas', mem.temp.Panas);
+    // Suhu (5 himpunan)
+    setBarVal('m-temp-sd', mem.temp.SD);
+    setBarVal('m-temp-d',  mem.temp.D);
+    setBarVal('m-temp-n',  mem.temp.N);
+    setBarVal('m-temp-p',  mem.temp.P);
+    setBarVal('m-temp-sp', mem.temp.SP);
 
-    setBarVal('m-hum-kering', mem.humid.Kering);
-    setBarVal('m-hum-normal', mem.humid.Normal);
-    setBarVal('m-hum-basah', mem.humid.Basah);
+    // Kelembapan (5 himpunan)
+    setBarVal('m-hum-sk', mem.humid.SK);
+    setBarVal('m-hum-k',  mem.humid.K);
+    setBarVal('m-hum-n',  mem.humid.N);
+    setBarVal('m-hum-b',  mem.humid.B);
+    setBarVal('m-hum-sb', mem.humid.SB);
 
-    setBarVal('m-nh3-aman', mem.ammonia.Aman);
-    setBarVal('m-nh3-waspada', mem.ammonia.Waspada);
-    setBarVal('m-nh3-bahaya', mem.ammonia.Bahaya);
+    // Amonia (5 himpunan)
+    setBarVal('m-nh3-sr', mem.ammonia.SR);
+    setBarVal('m-nh3-r',  mem.ammonia.R);
+    setBarVal('m-nh3-s',  mem.ammonia.S);
+    setBarVal('m-nh3-t',  mem.ammonia.T);
+    setBarVal('m-nh3-st', mem.ammonia.ST);
   }
 
   function setBarVal(id, val) {
     const bar = document.getElementById(id);
     const txt = document.getElementById(`${id}-val`);
-    if (bar) bar.style.width = `${(val * 100).toFixed(0)}%`;
-    if (txt) txt.textContent = val.toFixed(2);
+    const num = Number(val || 0);
+    if (bar) bar.style.width = `${Math.min(100, Math.round(num * 100))}%`;
+    if (txt) txt.textContent = num.toFixed(2);
   }
 
-  function renderActiveRules(rules) {
+  // Render tabel aturan (Aktif Saja vs Semua 125 Aturan)
+  function renderRulesTable() {
     const tbody = document.getElementById('active-rules-body');
-    if (!tbody) return;
+    if (!tbody || !state.fuzzy) return;
 
-    if (rules.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px;">Tidak ada rule aktif</td></tr>';
-      return;
+    if (state.rulesDisplayMode === 'active') {
+      const activeRules = state.fuzzy.activeRules;
+      if (activeRules.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px;">Tidak ada aturan yang aktif (&mu; = 0)</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = activeRules.map(r => `
+        <tr>
+          <td><span class="rule-id-badge">R${String(r.id).padStart(3, '0')}</span></td>
+          <td style="font-family:var(--font-mono);font-size:12px;">${r.antecedent}</td>
+          <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-main);">${r.consequent}</td>
+          <td style="font-family:var(--font-mono);font-weight:700;color:var(--primary);text-align:right;">
+            &alpha; = ${r.alpha.toFixed(2)}
+          </td>
+        </tr>
+      `).join('');
+    } else {
+      // Tampilkan seluruh 125 aturan dengan pencarian
+      const query = (state.rulesSearchQuery || '').toLowerCase();
+      const activeMap = new Map();
+      state.fuzzy.activeRules.forEach(r => activeMap.set(r.id, r.alpha));
+
+      const filtered = RULE_BASE_125.filter(r => {
+        if (!query) return true;
+        const text = `r${r.id} ${r.antecedent} ${r.consequent}`.toLowerCase();
+        return text.includes(query);
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:18px;">Tidak ada aturan yang cocok dengan pencarian</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(r => {
+        const activeAlpha = activeMap.get(r.id);
+        const isActive = activeAlpha !== undefined && activeAlpha > 0.001;
+        const rowBg = isActive ? 'background:rgba(255, 107, 0, 0.06);' : '';
+        const badgeStyle = isActive ? 'border-color:var(--primary);font-weight:800;' : 'opacity:0.7;';
+
+        return `
+          <tr style="${rowBg}">
+            <td><span class="rule-id-badge" style="${badgeStyle}">R${String(r.id).padStart(3, '0')}</span></td>
+            <td style="font-family:var(--font-mono);font-size:12px;">${r.antecedent}</td>
+            <td style="font-family:var(--font-mono);font-size:11px;">${r.consequent}</td>
+            <td style="font-family:var(--font-mono);font-weight:${isActive?'700':'400'};color:${isActive?'var(--primary)':'var(--text-muted)'};text-align:right;">
+              ${isActive ? `&alpha; = ${activeAlpha.toFixed(2)}` : '0.00'}
+            </td>
+          </tr>
+        `;
+      }).join('');
     }
-
-    tbody.innerHTML = rules.map(r => `
-      <tr>
-        <td><span class="rule-id-badge">R${String(r.id).padStart(2, '0')}</span></td>
-        <td style="font-family:var(--font-mono);">${r.antecedent}</td>
-        <td style="font-family:var(--font-mono);font-size:11px;">${r.consequent}</td>
-        <td style="font-family:var(--font-mono);font-weight:700;color:var(--primary);text-align:right;">
-          μ = ${r.alpha.toFixed(2)}
-        </td>
-      </tr>
-    `).join('');
   }
 
   // ════════════════════════════════════════════════════════════════
-  // 4. PURE HTML5 CANVAS LINE CHART
+  // 4. PURE HTML5 CANVAS REALTIME CHART
   // ════════════════════════════════════════════════════════════════
 
   function renderCanvasChart() {
@@ -695,7 +959,7 @@
     const ctx = canvas.getContext('2d');
     const w = canvas.parentElement.clientWidth;
     const h = 320;
-    
+
     const dpr = window.devicePixelRatio || 1;
     canvas.width = w * dpr;
     canvas.height = h * dpr;
@@ -716,14 +980,14 @@
     if (!data || data.length === 0) {
       ctx.fillStyle = '#8C90A0';
       ctx.font = '12px Inter';
-      ctx.fillText('Menunggu data telemetri...', w / 2 - 60, h / 2);
+      ctx.fillText('Menunggu data telemetri dari tabel telemetry...', w / 2 - 110, h / 2);
       return;
     }
 
     const minY = 0;
     const maxY = 100;
 
-    // Draw horizontal grid lines
+    // Garis grid horizontal
     ctx.strokeStyle = '#E2E4EB';
     ctx.lineWidth = 1;
     ctx.fillStyle = '#8C90A0';
@@ -787,9 +1051,9 @@
       ctx.stroke();
     }
 
-    drawSeries('humid', '#0284C7', 'rgba(2, 132, 199, 0.05)');
-    drawSeries('temp', '#FF6B00', 'rgba(255, 107, 0, 0.08)');
-    drawSeries('ammonia', '#10B981', 'rgba(16, 185, 129, 0.08)');
+    drawSeries('kelembapan', '#0284C7', 'rgba(2, 132, 199, 0.05)');
+    drawSeries('suhu',       '#FF6B00', 'rgba(255, 107, 0, 0.08)');
+    drawSeries('amonia',     '#10B981', 'rgba(16, 185, 129, 0.08)');
 
     ctx.fillStyle = '#8C90A0';
     ctx.textAlign = 'left';
@@ -801,11 +1065,11 @@
   }
 
   // ════════════════════════════════════════════════════════════════
-  // 5. EVENT LISTENERS & NAVIGATION
+  // 5. EVENT LISTENERS & LIVE SIMULATOR
   // ════════════════════════════════════════════════════════════════
 
   function initEvents() {
-    // Nav links (Sidebar & Mobile)
+    // Navigasi Link View (Sidebar & Mobile)
     const links = document.querySelectorAll('[data-view]');
     links.forEach(l => {
       l.addEventListener('click', (e) => {
@@ -815,8 +1079,8 @@
       });
     });
 
-    // Chart range filter buttons
-    const chartBtns = document.querySelectorAll('.chart-btn');
+    // Tombol Filter Rentang Grafik
+    const chartBtns = document.querySelectorAll('.chart-btn[data-range]');
     chartBtns.forEach(b => {
       b.addEventListener('click', () => {
         chartBtns.forEach(x => x.classList.remove('active'));
@@ -826,7 +1090,43 @@
       });
     });
 
-    // Log sensor date filter listeners
+    // Tombol Tab Aturan Mamdani (Aktif vs Semua 125 Aturan)
+    const btnActiveRules = document.getElementById('btn-show-active-rules');
+    const btnAllRules = document.getElementById('btn-show-all-rules');
+    const headingRules = document.getElementById('rules-view-heading');
+    const searchRules = document.getElementById('rule-search-input');
+
+    if (btnActiveRules && btnAllRules) {
+      btnActiveRules.addEventListener('click', () => {
+        state.rulesDisplayMode = 'active';
+        btnActiveRules.classList.add('active');
+        btnAllRules.classList.remove('active');
+        if (headingRules) headingRules.textContent = 'Daftar Aturan yang Sedang Aktif:';
+        if (searchRules) searchRules.style.display = 'none';
+        renderRulesTable();
+      });
+
+      btnAllRules.addEventListener('click', () => {
+        state.rulesDisplayMode = 'all';
+        btnAllRules.classList.add('active');
+        btnActiveRules.classList.remove('active');
+        if (headingRules) headingRules.textContent = 'Seluruh 125 Aturan Mamdani (5 × 5 × 5):';
+        if (searchRules) {
+          searchRules.style.display = 'inline-block';
+          searchRules.focus();
+        }
+        renderRulesTable();
+      });
+    }
+
+    if (searchRules) {
+      searchRules.addEventListener('input', (e) => {
+        state.rulesSearchQuery = e.target.value;
+        renderRulesTable();
+      });
+    }
+
+    // Filter Tanggal Log Sensor
     const btnFilter = document.getElementById('btn-filter-logs');
     if (btnFilter) {
       btnFilter.addEventListener('click', () => {
@@ -853,7 +1153,7 @@
       btnExport.addEventListener('click', exportLogsToCSV);
     }
 
-    // Fuzzy Mamdani Live Simulator Sliders
+    // ─── Live Simulator Slider ────────────────────────────────────
     const simTemp = document.getElementById('sim-temp');
     const simHum = document.getElementById('sim-hum');
     const simNh3 = document.getElementById('sim-nh3');
@@ -869,18 +1169,29 @@
 
       const simFuzzy = computeFuzzyMamdani(t, h, a);
       updateMembershipDisplay(simFuzzy.membership);
-      renderActiveRules(simFuzzy.activeRules);
 
+      // Tampilkan hasil defuzzifikasi Centroid & Scaling PWM
       const simOutBox = document.getElementById('sim-output-text');
       if (simOutBox) {
         simOutBox.innerHTML = `
-          <strong>Kondisi: ${simFuzzy.conditionLabel}</strong> | 
-          Kipas In: ${simFuzzy.crisp.fanIntake}% (${simFuzzy.states.fanIntake ? 'ON':'OFF'}), 
-          Kipas Out: ${simFuzzy.crisp.fanExhaust}% (${simFuzzy.states.fanExhaust ? 'ON':'OFF'}), 
-          Pemanas: ${simFuzzy.crisp.heater}% (${simFuzzy.states.heater ? 'ON':'OFF'}), 
-          Konveyor: ${simFuzzy.states.conveyor ? 'ON':'OFF'}
+          <div style="margin-bottom:4px;">
+            <strong>Status Kandang:</strong> <span class="badge-condition ${simFuzzy.statusClass}">${simFuzzy.conditionLabel}</span>
+            &nbsp;|&nbsp; <strong>Aturan Aktif:</strong> ${simFuzzy.activeRules.length} dari 125 Aturan
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:6px;margin-top:6px;font-size:11px;">
+            <div>🌀 <strong>Intake:</strong> y*=${simFuzzy.centroid.fanIntake} &rarr; <strong>${simFuzzy.crisp.fanIntake}% PWM</strong></div>
+            <div>💨 <strong>Exhaust:</strong> y*=${simFuzzy.centroid.fanExhaust} &rarr; <strong>${simFuzzy.crisp.fanExhaust}% PWM</strong></div>
+            <div>🔥 <strong>Pemanas:</strong> y*=${simFuzzy.centroid.heater} &rarr; <strong>${simFuzzy.crisp.heater}% PWM</strong></div>
+            <div>⚙️ <strong>Konveyor:</strong> <strong style="color:${simFuzzy.states.conveyor?'var(--success)':'var(--text-muted)'};">${simFuzzy.states.conveyor ? 'ON (AKTIF)' : 'OFF (MATI)'}</strong></div>
+          </div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">
+            *Defuzzifikasi Centroid COA domain [0..100] &amp; Scaling PWM Persamaan 3.2: y_pwm = ((y* - 8.3) / 83.4) &times; 100.
+          </div>
         `;
       }
+
+      state.fuzzy = simFuzzy;
+      renderRulesTable();
     }
 
     if (simTemp && simHum && simNh3) {
@@ -889,7 +1200,7 @@
       simNh3.addEventListener('input', onSimSliderChange);
     }
 
-    // Settings Modal Open / Close
+    // Modal Pengaturan Supabase
     const btnSettings = document.getElementById('btn-open-settings');
     const modal = document.getElementById('settings-modal');
     const modalClose = document.getElementById('modal-close');
@@ -916,7 +1227,6 @@
         state.supabaseKey = document.getElementById('input-sb-key').value.trim();
         state.esp32Ip = document.getElementById('input-esp32-ip').value.trim();
 
-        // Simpan ke localStorage
         localStorage.setItem('smartfarm_conn_mode', state.connectionMode);
         localStorage.setItem('smartfarm_supabase_url', state.supabaseUrl);
         localStorage.setItem('smartfarm_supabase_key', state.supabaseKey);
@@ -933,7 +1243,7 @@
       });
     }
 
-    // Notification dropdown toggle
+    // Modal Peringatan Notifikasi
     const btnNotif = document.getElementById('btn-notif');
     const notifModal = document.getElementById('notif-modal');
     if (btnNotif && notifModal) {
@@ -975,7 +1285,8 @@
   }
 
   // ════════════════════════════════════════════════════════════════
-  // 5. LOG DATA SENSOR & DATE FILTER (DATABASE SUPABASE)
+  // 6. LOG DATA SENSOR & UNDUH CSV (TABEL TUNGGAL 'telemetry')
+  // Sesuai Tabel 3.5 Proposal Skripsi
   // ════════════════════════════════════════════════════════════════
 
   let currentLogs = [];
@@ -985,12 +1296,12 @@
     const badge = document.getElementById('log-count-badge');
     if (!tbody) return;
 
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">Sedang mengambil data dari Supabase...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted);">Sedang mengambil data dari tabel telemetry Supabase...</td></tr>';
 
     try {
       if (state.connectionMode === 'supabase' && state.supabaseClient) {
         let query = state.supabaseClient
-          .from('sensor_readings')
+          .from('telemetry')
           .select('*')
           .order('created_at', { ascending: false });
 
@@ -1008,21 +1319,24 @@
 
         currentLogs = data || [];
       } else {
-        // Mode Demo / Simulasi: Ambil dari state.history
+        // Mode Demo / Simulasi Lokal
         currentLogs = state.history.map((h, idx) => ({
           id: idx + 1,
           created_at: h.time.toISOString(),
-          temperature: h.temp,
-          humidity: h.humid,
-          ammonia: h.ammonia,
-          device_id: 'ESP32-01'
+          suhu: h.suhu,
+          kelembapan: h.kelembapan,
+          amonia: h.amonia,
+          pwm_intake: h.pwm_intake,
+          pwm_exhaust: h.pwm_exhaust,
+          pwm_pemanas: h.pwm_pemanas,
+          status_konveyor: h.status_konveyor
         })).reverse();
       }
 
       renderLogsTable(currentLogs);
     } catch (err) {
-      console.error('Gagal mengambil log sensor:', err);
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--danger);">Gagal memuat log: ${err.message}</td></tr>`;
+      console.error('Gagal mengambil log telemetry:', err);
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--danger);">Gagal memuat log: ${err.message}</td></tr>`;
       if (badge) badge.textContent = 'Error';
     }
   }
@@ -1033,7 +1347,7 @@
     if (!tbody) return;
 
     if (!logs || logs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--text-muted);">Tidak ada data sensor pada rentang tanggal yang dipilih.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted);">Tidak ada data telemetri pada rentang tanggal yang dipilih.</td></tr>';
       if (badge) badge.textContent = '0 Data';
       return;
     }
@@ -1042,20 +1356,23 @@
 
     tbody.innerHTML = logs.map((item, index) => {
       const dt = new Date(item.created_at);
-      const timeStr = dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' + 
+      const timeStr = dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' +
                       dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-      const t = Number(item.temperature);
-      const h = Number(item.humidity);
-      const a = Number(item.ammonia);
+      const t = Number(item.suhu !== undefined ? item.suhu : item.temperature);
+      const h = Number(item.kelembapan !== undefined ? item.kelembapan : item.humidity);
+      const a = Number(item.amonia !== undefined ? item.amonia : item.ammonia);
+      const pwmIn = Number(item.pwm_intake || 0);
+      const pwmEx = Number(item.pwm_exhaust || 0);
+      const pwmHt = Number(item.pwm_pemanas || 0);
+      const cnv = Boolean(item.status_konveyor);
 
-      // Evaluasi status kondisi mikroklimat
       let condText = 'Normal';
       let condClass = 'normal';
-      if (a >= THRESHOLDS.ammonia.danger || t >= THRESHOLDS.temperature.danger) {
+      if (a >= THRESHOLDS.ammonia.danger || t >= THRESHOLDS.temperature.danger || t <= 14.0) {
         condText = 'Kritis / Bahaya';
         condClass = 'danger';
-      } else if (a >= THRESHOLDS.ammonia.warning || t >= THRESHOLDS.temperature.warning || h >= THRESHOLDS.humidity.danger) {
+      } else if (a >= THRESHOLDS.ammonia.warning || t >= THRESHOLDS.temperature.warning || t <= 18.0 || h >= THRESHOLDS.humidity.warning) {
         condText = 'Waspada';
         condClass = 'warning';
       }
@@ -1067,8 +1384,11 @@
           <td style="font-family:var(--font-mono);font-weight:700;color:#FF6B00;">${t.toFixed(1)} °C</td>
           <td style="font-family:var(--font-mono);font-weight:700;color:#0284C7;">${h.toFixed(1)} %</td>
           <td style="font-family:var(--font-mono);font-weight:700;color:#10B981;">${a.toFixed(1)} ppm</td>
+          <td style="font-family:var(--font-mono);font-weight:600;">${pwmIn}%</td>
+          <td style="font-family:var(--font-mono);font-weight:600;">${pwmEx}%</td>
+          <td style="font-family:var(--font-mono);font-weight:600;">${pwmHt}%</td>
+          <td><span class="actuator-binary-badge ${cnv?'on':''}">${cnv ? 'ON' : 'OFF'}</span></td>
           <td><span class="badge-condition ${condClass}">${condText}</span></td>
-          <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">${item.device_id || 'ESP32-01'}</td>
         </tr>
       `;
     }).join('');
@@ -1080,26 +1400,41 @@
       return;
     }
 
-    let csv = 'No,Waktu,Suhu_C,Kelembapan_Persen,Amonia_PPM,Status,Device_ID\r\n';
+    let csv = 'No,Waktu,Suhu_C,Kelembapan_RH,Amonia_PPM,PWM_Intake,PWM_Exhaust,PWM_Pemanas,Status_Konveyor,Status_Kondisi\r\n';
     currentLogs.forEach((item, idx) => {
       const dt = new Date(item.created_at).toLocaleString('id-ID');
-      const t = Number(item.temperature).toFixed(1);
-      const h = Number(item.humidity).toFixed(1);
-      const a = Number(item.ammonia).toFixed(1);
-      const dev = item.device_id || 'ESP32-01';
-      csv += `${idx + 1},"${dt}",${t},${h},${a},"${t > 30 ? 'Panas' : 'Normal'}",${dev}\r\n`;
+      const t = Number(item.suhu !== undefined ? item.suhu : item.temperature).toFixed(1);
+      const h = Number(item.kelembapan !== undefined ? item.kelembapan : item.humidity).toFixed(1);
+      const a = Number(item.amonia !== undefined ? item.amonia : item.ammonia).toFixed(1);
+      const pwmIn = Number(item.pwm_intake || 0);
+      const pwmEx = Number(item.pwm_exhaust || 0);
+      const pwmHt = Number(item.pwm_pemanas || 0);
+      const cnv = Boolean(item.status_konveyor) ? 'ON' : 'OFF';
+
+      let condText = 'Normal';
+      if (Number(a) >= THRESHOLDS.ammonia.danger || Number(t) >= THRESHOLDS.temperature.danger || Number(t) <= 14.0) {
+        condText = 'Kritis/Bahaya';
+      } else if (Number(a) >= THRESHOLDS.ammonia.warning || Number(t) >= THRESHOLDS.temperature.warning || Number(t) <= 18.0 || Number(h) >= THRESHOLDS.humidity.warning) {
+        condText = 'Waspada';
+      }
+
+      csv += `${idx + 1},"${dt}",${t},${h},${a},${pwmIn},${pwmEx},${pwmHt},"${cnv}","${condText}"\r\n`;
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `log-sensor-kandang-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `telemetry-kandang-ayam-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+
+  // ════════════════════════════════════════════════════════════════
+  // 7. SIKLUS HIDUP & POLLING
+  // ════════════════════════════════════════════════════════════════
 
   function switchView(viewName) {
     state.currentView = viewName;
@@ -1123,6 +1458,8 @@
       if (inputS && !inputS.value) inputS.value = today;
       if (inputE && !inputE.value) inputE.value = today;
       fetchSensorLogs(inputS ? inputS.value : '', inputE ? inputE.value : '');
+    } else if (viewName === 'fuzzy') {
+      renderRulesTable();
     }
   }
 
@@ -1130,31 +1467,32 @@
     if (state.timerId) clearInterval(state.timerId);
 
     if (state.connectionMode === 'supabase') {
-      setConnectionStatus(null, 'Database: Menghubungkan...', 'Memeriksa Supabase...');
+      setConnectionStatus(null, 'Database: Menghubungkan...', 'Memeriksa tabel telemetry Supabase...');
       initSupabaseClient().then(success => {
         if (!success) {
           state.timerId = setInterval(tickDemoData, 3000);
           tickDemoData();
         } else {
-          // Polling sinkronisasi database berkala setiap 5 detik
+          // Polling sinkronisasi database berkala setiap 5 detik ke tabel 'telemetry'
           state.timerId = setInterval(async () => {
             if (state.connectionMode === 'supabase' && state.supabaseClient) {
               try {
                 const { data, error } = await state.supabaseClient
-                  .from('sensor_readings')
+                  .from('telemetry')
                   .select('*')
                   .order('created_at', { ascending: false })
                   .limit(1);
+
                 if (!error && data && data.length > 0) {
                   const r = data[0];
                   const rowTime = new Date(r.created_at);
                   if (!state.sensors.timestamp || rowTime > state.sensors.timestamp) {
-                    updateSensorData(r.temperature, r.humidity, r.ammonia, r.created_at);
+                    updateTelemetryData(r);
                   }
-                  setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live)');
+                  setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
                 }
               } catch (e) {
-                console.warn('Sync periodic check error:', e);
+                console.warn('Sinkronisasi berkala gagal:', e);
               }
             }
           }, 5000);
@@ -1172,17 +1510,16 @@
   }
 
   // ════════════════════════════════════════════════════════════════
-  // 6. INITIALIZATION
+  // 8. INITIALIZATION
   // ════════════════════════════════════════════════════════════════
   function init() {
     initMockHistory();
     initEvents();
 
-    // Inisialisasi awal
     tickDemoData();
     restartPolling();
 
-    // Timer watchdog status koneksi ESP32 tiap 1 detik
+    // Watchdog status koneksi ESP32 tiap 1 detik
     setInterval(evaluateEsp32Status, 1000);
 
     const simTemp = document.getElementById('sim-temp');
