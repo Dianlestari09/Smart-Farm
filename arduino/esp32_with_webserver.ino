@@ -46,7 +46,7 @@ const char* DEVICE_ID       = "ESP32-01";
 // ─── 3. PIN SENSOR & AKTUATOR ─────────────────────────────────
 #define DHT_PIN             4      // GPIO Sensor DHT22 / SHT31
 #define DHT_TYPE            DHT22
-#define MQ137_PIN           34     // GPIO ADC MQ-137 (Amonia)
+#define MQ135_PIN           34     // GPIO ADC MQ-135 (Amonia)
 
 #define PIN_FAN_INTAKE      25     // Kipas Intake (Inflow)
 #define PIN_FAN_EXHAUST     27     // Kipas Exhaust (Outflow)
@@ -272,10 +272,10 @@ void setupWebServer() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// BACA MQ-137 (AMONIA)
+// BACA MQ-135 (AMONIA)
 // ══════════════════════════════════════════════════════════════
 float readAmmonia() {
-  int rawADC = analogRead(MQ137_PIN);
+  int rawADC = analogRead(MQ135_PIN);
   float ppm = (rawADC / 4095.0f) * 50.0f; // Kalibrasi 0 - 50 ppm
   return ppm;
 }

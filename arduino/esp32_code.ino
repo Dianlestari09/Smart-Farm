@@ -28,7 +28,7 @@ const char* DEVICE_ID     = "ESP32-01";
 // ─── Sensor Config ───────────────────────────────
 #define DHT_PIN    4      // GPIO pin SHT31 / DHT22
 #define DHT_TYPE   DHT22  
-#define MQ137_PIN  34     // GPIO ADC untuk sensor amonia MQ137
+#define MQ135_PIN  34     // GPIO ADC untuk sensor amonia MQ135
 
 DHT dht(DHT_PIN, DHT_TYPE);
 
@@ -158,10 +158,10 @@ float calcTrap(float x, float a, float b, float c, float d) {
 }
 
 // ═══════════════════════════════════════════════
-// BACA SENSOR AMONIA (MQ-137)
+// BACA SENSOR AMONIA (MQ-135)
 // ═══════════════════════════════════════════════
 float readAmmonia() {
-  int rawADC = analogRead(MQ137_PIN);
+  int rawADC = analogRead(MQ135_PIN);
   float voltage = rawADC * (3.3f / 4095.0f);
   // Konversi ADC ke PPM Amonia (0 - 50 ppm)
   float ppm = (rawADC / 4095.0f) * 50.0f; 

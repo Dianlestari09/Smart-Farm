@@ -3,7 +3,7 @@
 -- Skripsi: "Rancang Bangun Sistem Otomatisasi Mikroklimat
 --           Kandang Ayam Petelur Berbasis Fuzzy Logic Controller"
 -- Oleh: Dian Lestari Kurniawati (230605110016)
--- Hardware: ESP32 + SHT31 + MQ-137
+-- Hardware: ESP32 + SHT31 + MQ-135
 --
 -- Jalankan di: Supabase Dashboard → SQL Editor → Run
 -- ═══════════════════════════════════════════════════════════
@@ -12,14 +12,14 @@
 -- ─────────────────────────────────────────────────────────
 -- 1. TABEL SENSOR READINGS
 --    Data dari ESP32 via sensor SHT31 (suhu+kelembapan)
---    dan MQ-137 (gas amonia NH3)
+--    dan MQ-135 (gas amonia NH3)
 -- ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sensor_readings (
   id            bigserial PRIMARY KEY,
   created_at    timestamptz DEFAULT now() NOT NULL,
   temperature   float4 NOT NULL,   -- Suhu udara (°C) — sensor SHT31
   humidity      float4 NOT NULL,   -- Kelembapan relatif (%) — sensor SHT31
-  ammonia       float4 NOT NULL,   -- Konsentrasi gas NH3 (ppm) — sensor MQ-137
+  ammonia       float4 NOT NULL,   -- Konsentrasi gas NH3 (ppm) — sensor MQ-135
   device_id     text DEFAULT 'ESP32-01'
 );
 

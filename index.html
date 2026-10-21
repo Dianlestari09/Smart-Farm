@@ -157,7 +157,7 @@
         <div class="section-headline">
           <span class="section-icon">📡</span>
           <h2 class="section-title">Sensor Kandang</h2>
-          <span class="section-sub">SHT31 · MQ-137</span>
+          <span class="section-sub">SHT31 · MQ-135</span>
           <div class="section-divider"></div>
           <div id="esp32-live-chip"
             style="display:inline-flex;align-items:center;gap:6px;padding:5px 14px;border-radius:20px;font-size:11px;font-weight:700;background:var(--bg-card);border:1px solid var(--border);box-shadow:var(--shadow-sm);">
@@ -224,7 +224,7 @@
                 <div class="card-icon">☁️</div>
                 <div>
                   <div class="card-title">Gas Amonia (NH₃)</div>
-                  <div class="card-sensor-type">Sensor MQ-137</div>
+                  <div class="card-sensor-type">Sensor MQ-135</div>
                 </div>
               </div>
               <span class="card-badge normal" id="badge-ammonia">NORMAL</span>
@@ -257,24 +257,24 @@
 
         <div class="actuator-grid">
           <!-- Kipas Intake -->
-          <div class="actuator-card" id="act-fan-in">
+          <div class="actuator-card on" id="act-fan-in">
             <div class="actuator-top">
               <div class="actuator-header-info">
                 <div class="actuator-icon">🌀</div>
                 <div>
                   <div class="actuator-name">Kipas Intake</div>
-                  <div class="actuator-pin">GPIO 25 (Relay 1)</div>
+                  <div class="actuator-pin">GPIO 16 (MOSFET PWM)</div>
                 </div>
               </div>
-              <span class="actuator-status-pill" id="pill-fan-in">OFF</span>
+              <span class="actuator-status-pill" id="pill-fan-in">ON</span>
             </div>
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
-                <span>Keluaran Fuzzy:</span>
-                <span id="duty-val-fan-in" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+                <span>Output PWM:</span>
+                <span id="duty-val-fan-in" style="font-family:var(--font-mono);font-weight:700;">100%</span>
               </div>
               <div class="actuator-duty-bar">
-                <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 0%;"></div>
+                <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 100%;"></div>
               </div>
             </div>
             <div
@@ -285,24 +285,24 @@
           </div>
 
           <!-- Kipas Exhaust -->
-          <div class="actuator-card" id="act-fan-out">
+          <div class="actuator-card on" id="act-fan-out">
             <div class="actuator-top">
               <div class="actuator-header-info">
                 <div class="actuator-icon">💨</div>
                 <div>
                   <div class="actuator-name">Kipas Exhaust</div>
-                  <div class="actuator-pin">GPIO 27 (Relay 2)</div>
+                  <div class="actuator-pin">GPIO 17 (MOSFET PWM)</div>
                 </div>
               </div>
-              <span class="actuator-status-pill" id="pill-fan-out">OFF</span>
+              <span class="actuator-status-pill" id="pill-fan-out">ON</span>
             </div>
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
-                <span>Keluaran Fuzzy:</span>
-                <span id="duty-val-fan-out" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+                <span>Output PWM:</span>
+                <span id="duty-val-fan-out" style="font-family:var(--font-mono);font-weight:700;">100%</span>
               </div>
               <div class="actuator-duty-bar">
-                <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 0%;"></div>
+                <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 100%;"></div>
               </div>
             </div>
             <div
@@ -319,14 +319,14 @@
                 <div class="actuator-icon">🔥</div>
                 <div>
                   <div class="actuator-name">Lampu Pemanas</div>
-                  <div class="actuator-pin">GPIO 26 (Relay 3)</div>
+                  <div class="actuator-pin">GPIO 23 (MOSFET PWM)</div>
                 </div>
               </div>
               <span class="actuator-status-pill" id="pill-heater">OFF</span>
             </div>
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
-                <span>Keluaran Fuzzy:</span>
+                <span>Output PWM:</span>
                 <span id="duty-val-heater" style="font-family:var(--font-mono);font-weight:700;">0%</span>
               </div>
               <div class="actuator-duty-bar">
@@ -347,15 +347,15 @@
                 <div class="actuator-icon">⚙️</div>
                 <div>
                   <div class="actuator-name">Motor Konveyor</div>
-                  <div class="actuator-pin">GPIO 14 (Relay 4)</div>
+                  <div class="actuator-pin">GPIO 27 (Relay 1-CH)</div>
                 </div>
               </div>
               <span class="actuator-status-pill" id="pill-conveyor">OFF</span>
             </div>
             <div class="actuator-duty-wrap">
-              <div style="display:flex;justify-content:space-between;">
-                <span>Keluaran Fuzzy:</span>
-                <span id="duty-val-conveyor" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span>Status:</span>
+                <span id="duty-val-conveyor" class="actuator-binary-badge">OFF</span>
               </div>
               <div class="actuator-duty-bar">
                 <div class="actuator-duty-fill" id="duty-fill-conveyor" style="width: 0%;"></div>
@@ -711,7 +711,7 @@
             </div>
             <div class="info-table-row">
               <span class="info-label">Sensor Gas Amonia</span>
-              <span class="info-val">MQ-137 (ADC GPIO 34)</span>
+              <span class="info-val">MQ-135 (ADC GPIO 34)</span>
             </div>
             <div class="info-table-row">
               <span class="info-label">Cloud Database</span>

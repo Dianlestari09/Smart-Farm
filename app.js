@@ -623,7 +623,6 @@
     const pill = document.getElementById(`pill-${idPrefix}`);
     const dutyVal = document.getElementById(`duty-val-${idPrefix}`);
     const dutyFill = document.getElementById(`duty-fill-${idPrefix}`);
-    const chk = document.getElementById(`chk-${idPrefix}`);
 
     if (card) {
       if (isOn) card.classList.add('on');
@@ -634,8 +633,13 @@
       pill.textContent = isOn ? 'ON' : 'OFF';
     }
 
-    if (dutyVal) dutyVal.textContent = `${dutyPct}%`;
-    if (dutyFill) dutyFill.style.width = `${dutyPct}%`;
+    if (idPrefix === 'conveyor') {
+      if (dutyVal) dutyVal.textContent = isOn ? 'ON' : 'OFF';
+      if (dutyFill) dutyFill.style.width = isOn ? '100%' : '0%';
+    } else {
+      if (dutyVal) dutyVal.textContent = `${dutyPct}%`;
+      if (dutyFill) dutyFill.style.width = `${dutyPct}%`;
+    }
   }
 
   function updateMembershipDisplay(mem) {
@@ -874,7 +878,7 @@
           Kipas In: ${simFuzzy.crisp.fanIntake}% (${simFuzzy.states.fanIntake ? 'ON':'OFF'}), 
           Kipas Out: ${simFuzzy.crisp.fanExhaust}% (${simFuzzy.states.fanExhaust ? 'ON':'OFF'}), 
           Pemanas: ${simFuzzy.crisp.heater}% (${simFuzzy.states.heater ? 'ON':'OFF'}), 
-          Konveyor: ${simFuzzy.crisp.conveyor}% (${simFuzzy.states.conveyor ? 'ON':'OFF'})
+          Konveyor: ${simFuzzy.states.conveyor ? 'ON':'OFF'}
         `;
       }
     }

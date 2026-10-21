@@ -678,6 +678,25 @@ button, input, select {
   transition: width 0.4s ease;
 }
 
+.actuator-binary-badge {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  display: inline-block;
+  line-height: 1.2;
+}
+
+.actuator-card.on .actuator-binary-badge {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: rgba(22, 163, 74, 0.3);
+}
+
 /* Switch override */
 .switch-row {
   display: flex;
