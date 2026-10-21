@@ -19,10 +19,11 @@
   'use strict';
 
   // ─── AMBANG BATAS STANDAR MIKROKLIMAT AYAM PETELUR ───────────
+  // Sesuai Bab III Proposal: Amonia < 20 ppm (Normal/Aman), 20-30 ppm (Waspada/Konveyor ON), >= 30 ppm (Bahaya)
   const THRESHOLDS = {
     temperature: { min: 10, max: 40, warning: 27, danger: 31 },
-    humidity:    { min: 20, max: 100, warning: 85, danger: 90 },
-    ammonia:     { min: 0,  max: 50,  warning: 15, danger: 20 }
+    humidity:    { min: 20, max: 100, warning: 85, danger: 92 },
+    ammonia:     { min: 0,  max: 50,  warning: 20, danger: 30 }
   };
 
   // Baca konfigurasi dari config.js atau localStorage
@@ -115,119 +116,73 @@
     return (d - x) / (d - c);
   }
 
-  // Nama himpunan linguistik
-  const T_LABELS = ['Sangat Dingin', 'Dingin', 'Normal', 'Panas', 'Sangat Panas'];
-  const H_LABELS = ['Sangat Kering', 'Kering', 'Normal', 'Basah', 'Sangat Basah'];
-  const A_LABELS = ['Sangat Aman', 'Aman', 'Waspada', 'Bahaya', 'Sangat Bahaya'];
+  // Nama himpunan linguistik (sesuai Tabel 125 Aturan Proposal)
+  const T_LABELS = ['Sangat Dingin (<15)', 'Dingin (15-20)', 'Normal (20-25)', 'Panas (25-30)', 'Sangat Panas (>30)'];
+  const H_LABELS = ['Sangat Kering (<40)', 'Kering (40-60)', 'Normal (60-80)', 'Basah (80-90)', 'Sangat Basah (>90)'];
+  const A_LABELS = ['Sangat Rendah (<10)', 'Rendah (10-20)', 'Sedang (20-30)', 'Tinggi (30-40)', 'Sangat Tinggi (>40)'];
   const OUT_LABELS = ['Mati', 'Rendah', 'Sedang', 'Tinggi', 'Maksimal'];
 
-  // Definisi matriks output 125 aturan: [Intake, Exhaust, Pemanas]
+  // 125 Matriks Baku Rule Base Mamdani sesuai Naskah Proposal Bab III:
+  // Format tiap baris: [htTerm (Pemanas), exTerm (Exhaust), inTerm (Intake), konvTerm (Konveyor)]
   // Nilai term output: 0=Mati (0%), 1=Rendah (25%), 2=Sedang (50%), 3=Tinggi (75%), 4=Maksimal (100%)
-  function determineRuleOutput(t, h, a) {
-    let inTerm = 0;
-    let exTerm = 0;
-    let htTerm = 0;
+  // Konveyor: 0=OFF, 1=ON
+  const MAMDANI_RULES_DATA = [
+    [4, 0, 0, 0], [4, 0, 0, 0], [4, 0, 1, 1], [3, 0, 2, 1], [3, 1, 3, 1], // R001-R005: Suhu < 15, RH < 40
+    [4, 0, 0, 0], [4, 0, 0, 0], [4, 0, 1, 1], [3, 0, 2, 1], [3, 1, 3, 1], // R006-R010: Suhu < 15, RH 40-60
+    [4, 0, 0, 0], [4, 0, 0, 0], [4, 0, 1, 1], [3, 0, 2, 1], [3, 1, 3, 1], // R011-R015: Suhu < 15, RH 60-80
+    [4, 0, 1, 0], [4, 0, 1, 0], [3, 0, 2, 1], [3, 1, 3, 1], [2, 1, 4, 1], // R016-R020: Suhu < 15, RH 80-90
+    [4, 0, 1, 0], [3, 0, 2, 0], [3, 1, 2, 1], [2, 1, 3, 1], [2, 1, 4, 1], // R021-R025: Suhu < 15, RH > 90
 
-    // 1. Pemanas (Heater): Merespons suhu dingin (SD & D)
-    if (t === 0) { // SD (Sangat Dingin)
-      htTerm = 4; // Maksimal (100%)
-    } else if (t === 1) { // D (Dingin)
-      if (a >= 3) {
-        htTerm = 3; // Tinggi (75%) — kompensasi kalor saat exhaust membuang amonia
-      } else if (h >= 3) {
-        htTerm = 2; // Sedang (50%)
-      } else {
-        htTerm = (h === 0) ? 1 : 2; // Rendah (25%) atau Sedang (50%)
-      }
-    } else { // N, P, SP (Normal / Panas / Sangat Panas)
-      htTerm = 0; // Mati (0%)
-    }
+    [3, 0, 0, 0], [3, 0, 0, 0], [2, 0, 1, 1], [2, 0, 2, 1], [1, 1, 3, 1], // R026-R030: Suhu 15-20, RH < 40
+    [3, 0, 0, 0], [3, 0, 0, 0], [2, 0, 1, 1], [2, 0, 2, 1], [1, 1, 3, 1], // R031-R035: Suhu 15-20, RH 40-60
+    [2, 0, 0, 0], [2, 0, 0, 0], [2, 0, 1, 1], [1, 0, 2, 1], [1, 1, 3, 1], // R036-R040: Suhu 15-20, RH 60-80
+    [2, 0, 1, 0], [2, 0, 1, 0], [1, 0, 2, 1], [1, 1, 3, 1], [0, 1, 4, 1], // R041-R045: Suhu 15-20, RH 80-90
+    [2, 0, 1, 0], [1, 0, 2, 0], [1, 1, 2, 1], [0, 1, 3, 1], [0, 2, 4, 1], // R046-R050: Suhu 15-20, RH > 90
 
-    // 2. Kipas Exhaust: Membuang panas, amonia beracun, dan kelembapan tinggi
-    if (a === 4) { // ST (Sangat Bahaya)
-      exTerm = (t >= 2) ? 4 : (t === 1 ? 3 : 2);
-    } else if (a === 3) { // T (Bahaya)
-      if (t >= 3) exTerm = 4;
-      else if (t === 2) exTerm = 3;
-      else if (t === 1) exTerm = 2;
-      else exTerm = 1;
-    } else if (a === 2) { // S (Waspada)
-      if (t === 4) exTerm = 4;
-      else if (t === 3) exTerm = 3;
-      else if (t === 2) exTerm = 2;
-      else if (t === 1) exTerm = 1;
-      else exTerm = 0;
-    } else if (a === 1) { // R (Aman)
-      if (t === 4) exTerm = 4;
-      else if (t === 3) exTerm = 3;
-      else if (t === 2) {
-        if (h === 4) exTerm = 2;
-        else if (h === 3) exTerm = 1;
-        else exTerm = 0;
-      } else {
-        exTerm = 0;
-      }
-    } else { // SR (Sangat Aman)
-      if (t === 4) exTerm = 4;
-      else if (t === 3) exTerm = 3;
-      else if (t === 2) {
-        if (h === 4) exTerm = 2;
-        else if (h === 3) exTerm = 1;
-        else exTerm = 0;
-      } else {
-        exTerm = 0;
-      }
-    }
+    [0, 0, 0, 0], [0, 0, 0, 0], [0, 1, 1, 1], [0, 2, 3, 1], [0, 3, 4, 1], // R051-R055: Suhu 20-25, RH < 40
+    [0, 0, 0, 0], [0, 0, 0, 0], [0, 1, 1, 1], [0, 2, 3, 1], [0, 3, 4, 1], // R056-R060: Suhu 20-25, RH 40-60
+    [0, 0, 0, 0], [0, 0, 0, 0], [0, 1, 2, 1], [0, 2, 3, 1], [0, 3, 4, 1], // R061-R065: Suhu 20-25, RH 60-80
+    [0, 1, 1, 0], [0, 1, 2, 0], [0, 2, 2, 1], [0, 2, 3, 1], [0, 3, 4, 1], // R066-R070: Suhu 20-25, RH 80-90
+    [0, 1, 2, 0], [0, 2, 2, 0], [0, 2, 3, 1], [0, 3, 3, 1], [0, 3, 4, 1], // R071-R075: Suhu 20-25, RH > 90
 
-    // 3. Kipas Intake: Pasokan udara segar & sirkulasi ventilasi silang
-    if (t === 4) { // SP (Sangat Panas)
-      inTerm = 4; // Maksimal (100%)
-    } else if (t === 3) { // P (Panas)
-      inTerm = (a >= 2 || h >= 3) ? 3 : 2; // Tinggi (75%) atau Sedang (50%)
-    } else if (t === 2) { // N (Normal)
-      if (a === 4) inTerm = 3; // Tinggi
-      else if (a === 3) inTerm = 2; // Sedang
-      else if (a === 2) inTerm = 1; // Rendah
-      else {
-        if (h === 4) inTerm = 2;
-        else if (h === 3) inTerm = 1;
-        else inTerm = 0;
-      }
-    } else if (t === 1) { // D (Dingin)
-      inTerm = (a >= 3) ? 1 : 0; // Sirkulasi minimal saat amonia bahaya
-    } else { // SD (Sangat Dingin)
-      inTerm = 0; // Mati (cegah hembusan dingin langsung)
-    }
+    [0, 2, 2, 0], [0, 2, 2, 0], [0, 2, 3, 1], [0, 3, 4, 1], [0, 4, 4, 1], // R076-R080: Suhu 25-30, RH < 40
+    [0, 2, 2, 0], [0, 2, 2, 0], [0, 2, 3, 1], [0, 3, 4, 1], [0, 4, 4, 1], // R081-R085: Suhu 25-30, RH 40-60
+    [0, 2, 3, 0], [0, 2, 3, 0], [0, 3, 3, 1], [0, 3, 4, 1], [0, 4, 4, 1], // R086-R090: Suhu 25-30, RH 60-80
+    [0, 3, 3, 0], [0, 3, 3, 0], [0, 3, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R091-R095: Suhu 25-30, RH 80-90
+    [0, 3, 4, 0], [0, 3, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R096-R100: Suhu 25-30, RH > 90
 
-    return { inTerm, exTerm, htTerm };
-  }
+    [0, 4, 4, 0], [0, 4, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R101-R105: Suhu > 30, RH < 40
+    [0, 4, 4, 0], [0, 4, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R106-R110: Suhu > 30, RH 40-60
+    [0, 4, 4, 0], [0, 4, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R111-R115: Suhu > 30, RH 60-80
+    [0, 4, 4, 0], [0, 4, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1], // R116-R120: Suhu > 30, RH 80-90
+    [0, 4, 4, 0], [0, 4, 4, 0], [0, 4, 4, 1], [0, 4, 4, 1], [0, 4, 4, 1]  // R121-R125: Suhu > 30, RH > 90
+  ];
 
   // Bangun pustaka 125 aturan sekali saat startup
   const RULE_BASE_125 = [];
-  let ruleCounter = 1;
-  for (let t = 0; t < 5; t++) {
-    for (let h = 0; h < 5; h++) {
-      for (let a = 0; a < 5; a++) {
-        const out = determineRuleOutput(t, h, a);
-        RULE_BASE_125.push({
-          id: ruleCounter++,
-          tIdx: t,
-          hIdx: h,
-          aIdx: a,
-          tName: T_LABELS[t],
-          hName: H_LABELS[h],
-          aName: A_LABELS[a],
-          inTerm: out.inTerm,
-          exTerm: out.exTerm,
-          htTerm: out.htTerm,
-          inName: OUT_LABELS[out.inTerm],
-          exName: OUT_LABELS[out.exTerm],
-          htName: OUT_LABELS[out.htTerm],
-          antecedent: `IF Suhu=${T_LABELS[t]} AND Kelembapan=${H_LABELS[h]} AND Amonia=${A_LABELS[a]}`,
-          consequent: `THEN Intake=${OUT_LABELS[out.inTerm]}, Exhaust=${OUT_LABELS[out.exTerm]}, Pemanas=${OUT_LABELS[out.htTerm]}`
-        });
-      }
-    }
+  for (let idx = 0; idx < 125; idx++) {
+    const t = Math.floor(idx / 25);
+    const h = Math.floor((idx % 25) / 5);
+    const a = idx % 5;
+    const [htTerm, exTerm, inTerm, konvTerm] = MAMDANI_RULES_DATA[idx];
+    RULE_BASE_125.push({
+      id: idx + 1,
+      tIdx: t,
+      hIdx: h,
+      aIdx: a,
+      tName: T_LABELS[t],
+      hName: H_LABELS[h],
+      aName: A_LABELS[a],
+      inTerm,
+      exTerm,
+      htTerm,
+      konvTerm,
+      inName: OUT_LABELS[inTerm],
+      exName: OUT_LABELS[exTerm],
+      htName: OUT_LABELS[htTerm],
+      antecedent: `IF Suhu=${T_LABELS[t]} AND Kelembapan=${H_LABELS[h]} AND Amonia=${A_LABELS[a]}`,
+      consequent: `THEN Pemanas=${OUT_LABELS[htTerm]}, Exhaust=${OUT_LABELS[exTerm]}, Intake=${OUT_LABELS[inTerm]}, Konveyor=${konvTerm ? 'ON' : 'OFF'}`
+    });
   }
 
   // ─── DEFUZZIFIKASI CENTROID COA (Persamaan 3.1 & 3.2) ────────
@@ -312,12 +267,13 @@
     ];
 
     // 3. Fuzzifikasi Gas Amonia (0–50 ppm)
+    // Sesuai Tabel Baku: SR (< 10 ppm), R (10–20 ppm), S (20–30 ppm), T (30–40 ppm), ST (> 40 ppm)
     const muA = [
-      calcLeftShoulder(nh3, 5, 10),          // SR: Sangat Aman [0, 0, 5, 10]
-      calcTri(nh3, 5, 10, 15),               // R: Aman [5, 10, 10, 15]
-      calcTri(nh3, 10, 15, 20),              // S: Waspada [10, 15, 15, 20]
-      calcTri(nh3, 15, 20, 30),              // T: Bahaya [15, 20, 20, 30]
-      calcRightShoulder(nh3, 20, 30)         // ST: Sangat Bahaya [20, 30, 50, 50]
+      calcLeftShoulder(nh3, 5, 15),          // SR: Sangat Aman (< 10 ppm) [0, 0, 5, 15]
+      calcTri(nh3, 5, 15, 25),               // R: Aman (10 – 20 ppm) [5, 15, 25]
+      calcTri(nh3, 15, 25, 35),              // S: Waspada (20 – 30 ppm) [15, 25, 35]
+      calcTri(nh3, 25, 35, 45),              // T: Bahaya (30 – 40 ppm) [25, 35, 45]
+      calcRightShoulder(nh3, 35, 45)         // ST: Sangat Bahaya (> 40 ppm) [35, 45, 50, 50]
     ];
 
     // Array clipping alpha untuk 5 term output masing-masing aktuator
@@ -359,12 +315,13 @@
     const resHt = defuzzifyCentroid(betasHt);
 
     // 6. Logika Relai Biner Motor Konveyor (GPIO 27)
-    // Sesuai Proposal: Aktif jika Amonia >= 20 ppm ATAU Kelembapan > 90%
+    // Sesuai Proposal & Tabel Aksi Aktuator: Aktif jika Amonia >= 20 ppm (S, T, ST) ATAU Kelembapan > 90% (SB)
     const conveyorState = (nh3 >= 20.0 || humid > 90.0);
 
     // 7. Penentuan Label Kondisi Mikroklimat Kandang
-    const isDanger = nh3 >= 20.0 || temp >= 31.0 || temp <= 14.0;
-    const isWarning = nh3 >= 15.0 || temp >= 27.0 || temp <= 18.0 || humid >= 85.0;
+    // Sesuai Ambang Batas Proposal: Amonia < 20 ppm Normal (Aman), 20-30 ppm Waspada, >= 30 ppm Bahaya
+    const isDanger = nh3 >= THRESHOLDS.ammonia.danger || temp >= THRESHOLDS.temperature.danger || temp <= 14.0;
+    const isWarning = nh3 >= THRESHOLDS.ammonia.warning || temp >= THRESHOLDS.temperature.warning || temp <= 18.0 || humid >= THRESHOLDS.humidity.warning;
     const conditionLabel = isDanger ? 'Kondisi Bahaya' : (isWarning ? 'Kondisi Waspada' : 'Kondisi Normal');
     const statusClass = isDanger ? 'danger' : (isWarning ? 'warning' : 'normal');
 

@@ -244,66 +244,48 @@ float readAmmonia() {
 // MATRIKS 125 ATURAN MAMDANI (5 Suhu x 5 Kelembapan x 5 Amonia)
 // Output: 0=Mati, 1=Rendah (25%), 2=Sedang (50%), 3=Tinggi (75%), 4=Maksimal (100%)
 // ══════════════════════════════════════════════════════════════
+// 125 Matriks Baku Rule Base Mamdani sesuai Naskah Proposal Bab III:
+// Format tiap baris: {htTerm (Pemanas), exTerm (Exhaust), inTerm (Intake), konvTerm (Konveyor)}
+// Nilai term output: 0=Mati (0%), 1=Rendah (25%), 2=Sedang (50%), 3=Tinggi (75%), 4=Maksimal (100%)
+// Konveyor: 0=OFF, 1=ON
+const uint8_t RULE_TABLE[125][4] PROGMEM = {
+  {4, 0, 0, 0}, {4, 0, 0, 0}, {4, 0, 1, 1}, {3, 0, 2, 1}, {3, 1, 3, 1}, // R001-R005: Suhu < 15, RH < 40
+  {4, 0, 0, 0}, {4, 0, 0, 0}, {4, 0, 1, 1}, {3, 0, 2, 1}, {3, 1, 3, 1}, // R006-R010: Suhu < 15, RH 40-60
+  {4, 0, 0, 0}, {4, 0, 0, 0}, {4, 0, 1, 1}, {3, 0, 2, 1}, {3, 1, 3, 1}, // R011-R015: Suhu < 15, RH 60-80
+  {4, 0, 1, 0}, {4, 0, 1, 0}, {3, 0, 2, 1}, {3, 1, 3, 1}, {2, 1, 4, 1}, // R016-R020: Suhu < 15, RH 80-90
+  {4, 0, 1, 0}, {3, 0, 2, 0}, {3, 1, 2, 1}, {2, 1, 3, 1}, {2, 1, 4, 1}, // R021-R025: Suhu < 15, RH > 90
+
+  {3, 0, 0, 0}, {3, 0, 0, 0}, {2, 0, 1, 1}, {2, 0, 2, 1}, {1, 1, 3, 1}, // R026-R030: Suhu 15-20, RH < 40
+  {3, 0, 0, 0}, {3, 0, 0, 0}, {2, 0, 1, 1}, {2, 0, 2, 1}, {1, 1, 3, 1}, // R031-R035: Suhu 15-20, RH 40-60
+  {2, 0, 0, 0}, {2, 0, 0, 0}, {2, 0, 1, 1}, {1, 0, 2, 1}, {1, 1, 3, 1}, // R036-R040: Suhu 15-20, RH 60-80
+  {2, 0, 1, 0}, {2, 0, 1, 0}, {1, 0, 2, 1}, {1, 1, 3, 1}, {0, 1, 4, 1}, // R041-R045: Suhu 15-20, RH 80-90
+  {2, 0, 1, 0}, {1, 0, 2, 0}, {1, 1, 2, 1}, {0, 1, 3, 1}, {0, 2, 4, 1}, // R046-R050: Suhu 15-20, RH > 90
+
+  {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 1, 1, 1}, {0, 2, 3, 1}, {0, 3, 4, 1}, // R051-R055: Suhu 20-25, RH < 40
+  {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 1, 1, 1}, {0, 2, 3, 1}, {0, 3, 4, 1}, // R056-R060: Suhu 20-25, RH 40-60
+  {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 1, 2, 1}, {0, 2, 3, 1}, {0, 3, 4, 1}, // R061-R065: Suhu 20-25, RH 60-80
+  {0, 1, 1, 0}, {0, 1, 2, 0}, {0, 2, 2, 1}, {0, 2, 3, 1}, {0, 3, 4, 1}, // R066-R070: Suhu 20-25, RH 80-90
+  {0, 1, 2, 0}, {0, 2, 2, 0}, {0, 2, 3, 1}, {0, 3, 3, 1}, {0, 3, 4, 1}, // R071-R075: Suhu 20-25, RH > 90
+
+  {0, 2, 2, 0}, {0, 2, 2, 0}, {0, 2, 3, 1}, {0, 3, 4, 1}, {0, 4, 4, 1}, // R076-R080: Suhu 25-30, RH < 40
+  {0, 2, 2, 0}, {0, 2, 2, 0}, {0, 2, 3, 1}, {0, 3, 4, 1}, {0, 4, 4, 1}, // R081-R085: Suhu 25-30, RH 40-60
+  {0, 2, 3, 0}, {0, 2, 3, 0}, {0, 3, 3, 1}, {0, 3, 4, 1}, {0, 4, 4, 1}, // R086-R090: Suhu 25-30, RH 60-80
+  {0, 3, 3, 0}, {0, 3, 3, 0}, {0, 3, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R091-R095: Suhu 25-30, RH 80-90
+  {0, 3, 4, 0}, {0, 3, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R096-R100: Suhu 25-30, RH > 90
+
+  {0, 4, 4, 0}, {0, 4, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R101-R105: Suhu > 30, RH < 40
+  {0, 4, 4, 0}, {0, 4, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R106-R110: Suhu > 30, RH 40-60
+  {0, 4, 4, 0}, {0, 4, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R111-R115: Suhu > 30, RH 60-80
+  {0, 4, 4, 0}, {0, 4, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}, // R116-R120: Suhu > 30, RH 80-90
+  {0, 4, 4, 0}, {0, 4, 4, 0}, {0, 4, 4, 1}, {0, 4, 4, 1}, {0, 4, 4, 1}  // R121-R125: Suhu > 30, RH > 90
+};
+
 RuleOutputTerms getRuleOutput(int t, int h, int a) {
-  RuleOutputTerms out = {0, 0, 0};
-
-  // 1. Lampu Pemanas (Heater)
-  if (t == 0) { // SD (Sangat Dingin)
-    out.htTerm = 4; // Maksimal
-  } else if (t == 1) { // D (Dingin)
-    if (a >= 3) out.htTerm = 3; // Tinggi
-    else if (h >= 3) out.htTerm = 2; // Sedang
-    else out.htTerm = (h == 0) ? 1 : 2;
-  } else { // N, P, SP
-    out.htTerm = 0; // Mati
-  }
-
-  // 2. Kipas Exhaust
-  if (a == 4) { // ST (Sangat Bahaya)
-    out.exTerm = (t >= 2) ? 4 : (t == 1 ? 3 : 2);
-  } else if (a == 3) { // T (Bahaya)
-    if (t >= 3) out.exTerm = 4;
-    else if (t == 2) out.exTerm = 3;
-    else if (t == 1) out.exTerm = 2;
-    else out.exTerm = 1;
-  } else if (a == 2) { // S (Waspada)
-    if (t == 4) out.exTerm = 4;
-    else if (t == 3) out.exTerm = 3;
-    else if (t == 2) out.exTerm = 2;
-    else if (t == 1) out.exTerm = 1;
-    else out.exTerm = 0;
-  } else { // R (Aman) & SR (Sangat Aman)
-    if (t == 4) out.exTerm = 4;
-    else if (t == 3) out.exTerm = 3;
-    else if (t == 2) {
-      if (h == 4) out.exTerm = 2;
-      else if (h == 3) out.exTerm = 1;
-      else out.exTerm = 0;
-    } else {
-      out.exTerm = 0;
-    }
-  }
-
-  // 3. Kipas Intake
-  if (t == 4) { // SP (Sangat Panas)
-    out.inTerm = 4; // Maksimal
-  } else if (t == 3) { // P (Panas)
-    out.inTerm = (a >= 2 || h >= 3) ? 3 : 2; // Tinggi atau Sedang
-  } else if (t == 2) { // N (Normal)
-    if (a == 4) out.inTerm = 3;
-    else if (a == 3) out.inTerm = 2;
-    else if (a == 2) out.inTerm = 1;
-    else {
-      if (h == 4) out.inTerm = 2;
-      else if (h == 3) out.inTerm = 1;
-      else out.inTerm = 0;
-    }
-  } else if (t == 1) { // D (Dingin)
-    out.inTerm = (a >= 3) ? 1 : 0;
-  } else { // SD (Sangat Dingin)
-    out.inTerm = 0;
-  }
-
+  int idx = (t * 25) + (h * 5) + a;
+  RuleOutputTerms out;
+  out.htTerm = pgm_read_byte(&(RULE_TABLE[idx][0]));
+  out.exTerm = pgm_read_byte(&(RULE_TABLE[idx][1]));
+  out.inTerm = pgm_read_byte(&(RULE_TABLE[idx][2]));
   return out;
 }
 
@@ -384,12 +366,13 @@ FuzzyResult runMamdani125(float temp, float humid, float nh3) {
   };
 
   // 3. Fuzzifikasi Gas Amonia (0–50 ppm)
+  // Sesuai Tabel Baku: SR (< 10 ppm), R (10–20 ppm), S (20–30 ppm), T (30–40 ppm), ST (> 40 ppm)
   float muA[5] = {
-    calcLeftShoulder(nh3, 5.0f, 10.0f),         // SR: Sangat Aman [0, 0, 5, 10]
-    calcTri(nh3, 5.0f, 10.0f, 15.0f),          // R: Aman [5, 10, 10, 15]
-    calcTri(nh3, 10.0f, 15.0f, 20.0f),         // S: Waspada [10, 15, 15, 20]
-    calcTri(nh3, 15.0f, 20.0f, 30.0f),         // T: Bahaya [15, 20, 20, 30]
-    calcRightShoulder(nh3, 20.0f, 30.0f)        // ST: Sangat Bahaya [20, 30, 50, 50]
+    calcLeftShoulder(nh3, 5.0f, 15.0f),         // SR: Sangat Aman (< 10 ppm) [0, 0, 5, 15]
+    calcTri(nh3, 5.0f, 15.0f, 25.0f),          // R: Aman (10 – 20 ppm) [5, 15, 25]
+    calcTri(nh3, 15.0f, 25.0f, 35.0f),         // S: Waspada (20 – 30 ppm) [15, 25, 35]
+    calcTri(nh3, 25.0f, 35.0f, 45.0f),         // T: Bahaya (30 – 40 ppm) [25, 35, 45]
+    calcRightShoulder(nh3, 35.0f, 45.0f)        // ST: Sangat Bahaya (> 40 ppm) [35, 45, 50, 50]
   };
 
   // Array clipping alpha untuk 5 term output
@@ -417,14 +400,14 @@ FuzzyResult runMamdani125(float temp, float humid, float nh3) {
   CentroidResult resEx = defuzzifyCentroid(betasEx);
   CentroidResult resHt = defuzzifyCentroid(betasHt);
 
-  // 6. Relai Biner Motor Konveyor (Sesuai Proposal: Amonia >= 20 ppm ATAU Kelembapan > 90%)
+  // 6. Relai Biner Motor Konveyor (Sesuai Proposal & Tabel Aksi Aktuator: Amonia >= 20.0 ppm ATAU Kelembapan > 90%)
   bool conveyor = (nh3 >= 20.0f || humid > 90.0f);
 
-  // Label kondisi mikroklimat
+  // Label kondisi mikroklimat (Amonia < 20 ppm Normal, 20-30 ppm Waspada, >= 30 ppm Bahaya)
   String label = "Kondisi Normal";
-  if (nh3 >= 20.0f || temp >= 31.0f || temp <= 14.0f) {
+  if (nh3 >= 30.0f || temp >= 31.0f || temp <= 14.0f) {
     label = "Kondisi Bahaya";
-  } else if (nh3 >= 15.0f || temp >= 27.0f || temp <= 18.0f || humid >= 85.0f) {
+  } else if (nh3 >= 20.0f || temp >= 27.0f || temp <= 18.0f || humid >= 85.0f) {
     label = "Kondisi Waspada";
   }
 
