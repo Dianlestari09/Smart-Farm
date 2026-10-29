@@ -31,8 +31,8 @@
 #include <Adafruit_SHT31.h>
 
 // ─── 1. KONFIGURASI WIFI & ACCESS POINT ───────────────────────
-const char* WIFI_SSID       = "SSID_WIFI_KANDANG";
-const char* WIFI_PASSWORD   = "PASSWORD_WIFI_KANDANG";
+const char* WIFI_SSID       = "vivoV30";
+const char* WIFI_PASSWORD   = "dianlestari";
 
 // Access Point lokal (Bisa dibuka di HP walau tanpa internet)
 const char* AP_SSID         = "SmartFarm-Kandang";
@@ -48,6 +48,15 @@ const char* SUPABASE_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJz
 #define PIN_HEATER          23     // Lampu Pemanas (MOSFET PWM)
 #define PIN_CONVEYOR        27     // Relai 1-Kanal Motor Konveyor (Digital HIGH/LOW)
 #define PIN_MQ135           34     // Sensor Gas Amonia MQ-135 (ADC Analog GPIO 34)
+
+// ─── LOGIKA PEMICU MODUL RELAI (ACTIVE LOW vs ACTIVE HIGH) ───
+// Mayoritas modul relai 1-kanal Arduino/ESP32 (optocoupler biru) bertipe ACTIVE LOW:
+// - Sinyal LOW (0V)   -> Relai AKTIF (Klik ON, motor menyala)
+// - Sinyal HIGH (3.3V)-> Relai MATI  (OFF, motor berhenti)
+// Jika menggunakan modul Active High, ubah RELAY_ACTIVE_LOW menjadi false.
+#define RELAY_ACTIVE_LOW    true
+#define RELAY_ON            (RELAY_ACTIVE_LOW ? LOW : HIGH)
+#define RELAY_OFF           (RELAY_ACTIVE_LOW ? HIGH : LOW)
 
 // Kanal & Parameter PWM LEDC ESP32
 const int PWM_FREQ          = 5000;
@@ -139,7 +148,7 @@ void setup() {
   INIT_PWM(PIN_HEATER, CH_HEATER);
 
   pinMode(PIN_CONVEYOR, OUTPUT);
-  digitalWrite(PIN_CONVEYOR, LOW);
+  digitalWrite(PIN_CONVEYOR, RELAY_OFF);
   applyActuators(0, 0, 0, false);
 
   pinMode(PIN_MQ135, INPUT);
@@ -194,8 +203,8 @@ void loop() {
         currentHumid = h;
       }
     } else {
-      currentTemp  = 24.0f + sin(millis() / 20000.0f) * 4.0f;
-      currentHumid = 65.0f + cos(millis() / 25000.0f) * 10.0f;
+      currentTemp  = -999.0f;
+      currentHumid = -999.0f;
     }
 
     currentAmmonia = readAmmonia();
@@ -213,8 +222,8 @@ void loop() {
 
     applyActuators(statePwmIntake, statePwmExhaust, statePwmHeater, stateConveyor);
 
-    // 4. Kirim ke Supabase Cloud (Tabel Tunggal: 'telemetry')
-    if (WiFi.status() == WL_CONNECTED) {
+    // 4. Kirim ke Supabase Cloud (HANYA saat mode realtime / !manualOverride)
+    if (WiFi.status() == WL_CONNECTED && !manualOverride) {
       sendTelemetryToSupabase();
     }
   }
@@ -262,6 +271,88 @@ void setupWebServer() {
     }
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.send(200, "application/json", "{\"status\":\"ok\"}");
+  });
+
+  // REST API: Ambil Alih Demo Manual dari WebApps
+  server.on("/api/demo", HTTP_OPTIONS, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    server.send(204);
+  });
+
+  server.on("/api/demo", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    if (server.hasArg("suhu") && server.hasArg("kelembapan") && server.hasArg("amonia")) {
+      manualOverride = true;
+      currentTemp = server.arg("suhu").toFloat();
+      currentHumid = server.arg("kelembapan").toFloat();
+      currentAmmonia = server.arg("amonia").toFloat();
+      currentFuzzy = runMamdani125(currentTemp, currentHumid, currentAmmonia);
+      statePwmIntake  = currentFuzzy.pwm_intake;
+      statePwmExhaust = currentFuzzy.pwm_exhaust;
+      statePwmHeater  = currentFuzzy.pwm_pemanas;
+      stateConveyor   = currentFuzzy.status_konveyor;
+      applyActuators(statePwmIntake, statePwmExhaust, statePwmHeater, stateConveyor);
+      server.send(200, "application/json", "{\"status\":\"ok\",\"mode\":\"demo_manual\"}");
+    } else {
+      server.send(400, "application/json", "{\"error\":\"Missing params\"}");
+    }
+  });
+
+  server.on("/api/auto", HTTP_OPTIONS, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    server.send(204);
+  });
+
+  server.on("/api/auto", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    manualOverride = false;
+
+    if (sht31Available) {
+      float t = sht31.readTemperature();
+      float h = sht31.readHumidity();
+      if (!isnan(t) && !isnan(h)) {
+        currentTemp  = t;
+        currentHumid = h;
+      }
+    } else {
+      currentTemp = -999.0f;
+      currentHumid = -999.0f;
+    }
+    currentAmmonia = readAmmonia();
+    currentFuzzy = runMamdani125(currentTemp, currentHumid, currentAmmonia);
+    statePwmIntake  = currentFuzzy.pwm_intake;
+    statePwmExhaust = currentFuzzy.pwm_exhaust;
+    statePwmHeater  = currentFuzzy.pwm_pemanas;
+    stateConveyor   = currentFuzzy.status_konveyor;
+    applyActuators(statePwmIntake, statePwmExhaust, statePwmHeater, stateConveyor);
+
+    if (WiFi.status() == WL_CONNECTED) {
+      sendTelemetryToSupabase();
+    }
+
+    server.send(200, "application/json", "{\"status\":\"ok\",\"mode\":\"auto\"}");
+  });
+
+  server.on("/api/ping", HTTP_OPTIONS, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    server.send(204);
+  });
+
+  server.on("/api/ping", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Private-Network", "true");
+    server.send(200, "application/json", "{\"status\":\"ok\",\"device\":\"SmartFarm-ESP32\"}");
   });
 
   // Sajikan berkas HTML, CSS, JS dari LittleFS
@@ -393,6 +484,12 @@ CentroidResult defuzzifyCentroid(const float betas[5]) {
     return { 8.3f, 0 };
   }
 
+  // Jika hanya term 0 (Mati) yang aktif (tidak ada term Rendah..Maksimal yang aktif),
+  // maka aktuator secara tegas 0% PWM (Mati)
+  if (betas[1] <= 0.0001f && betas[2] <= 0.0001f && betas[3] <= 0.0001f && betas[4] <= 0.0001f) {
+    return { 8.3f, 0 };
+  }
+
   float num = 0.0f;
   float den = 0.0f;
   const float dy = 0.5f;
@@ -429,6 +526,11 @@ CentroidResult defuzzifyCentroid(const float betas[5]) {
   float y_star = num / den;
   float pwmRaw = ((y_star - 8.3f) / (91.7f - 8.3f)) * 100.0f;
   int pwm = constrain((int)roundf(pwmRaw), 0, 100);
+
+  // Deadband thresholding untuk mencegah residual numerik kliping segitiga siku-siku
+  if (pwm <= 2 && betas[1] <= 0.05f && betas[2] <= 0.05f && betas[3] <= 0.05f && betas[4] <= 0.05f) {
+    pwm = 0;
+  }
 
   return { y_star, pwm };
 }
@@ -485,6 +587,15 @@ FuzzyResult runMamdani125(float temp, float humid, float nh3) {
   CentroidResult resEx = defuzzifyCentroid(betasEx);
   CentroidResult resHt = defuzzifyCentroid(betasHt);
 
+  // Proteksi & Penyesuaian Logika Lampu Pemanas:
+  // Pemanas hanya aktif saat kondisi dingin (Suhu < 20°C).
+  // Pada suhu ideal/normal (18-27°C, khususnya >= 20°C) atau panas/sangat panas (>= 27°C),
+  // lampu pemanas WAJIB mati total (0% PWM & status OFF).
+  if (temp >= 20.0f || (betasHt[1] <= 0.0001f && betasHt[2] <= 0.0001f && betasHt[3] <= 0.0001f && betasHt[4] <= 0.0001f)) {
+    resHt.pwm = 0;
+    resHt.y_star = 8.3f;
+  }
+
   // 6. Relai Biner Motor Konveyor (Sesuai Proposal & Tabel Aksi Aktuator: Amonia >= 20.0 ppm ATAU Kelembapan > 90%)
   bool conveyor = (nh3 >= 20.0f || humid > 90.0f);
 
@@ -521,7 +632,7 @@ void applyActuators(int pwm_in, int pwm_ex, int pwm_ht, bool conveyor_on) {
   WRITE_PWM(PIN_FAN_EXHAUST, CH_FAN_EXHAUST, dutyEx);
   WRITE_PWM(PIN_HEATER,      CH_HEATER,      dutyHt);
 
-  digitalWrite(PIN_CONVEYOR, conveyor_on ? HIGH : LOW);
+  digitalWrite(PIN_CONVEYOR, conveyor_on ? RELAY_ON : RELAY_OFF);
 }
 
 // ══════════════════════════════════════════════════════════════

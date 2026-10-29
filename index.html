@@ -16,7 +16,7 @@
     rel="stylesheet">
 
   <!-- Stylesheet Native -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5.5">
 
   <!-- Supabase Official JS SDK CDN (Mendukung Realtime WebSocket) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -114,6 +114,9 @@
                 Cloud</span>
             </div>
           </div>
+          <button type="button" class="btn-quick-demo-toggle" id="btn-quick-demo-toggle" title="Klik untuk beralih mode sumber data">
+            <span id="quick-demo-toggle-label">🧪 Buka Mode Demo</span>
+          </button>
         </div>
 
         <div style="height:1px;background:var(--border);"></div>
@@ -140,6 +143,41 @@
     <!-- Content Area -->
     <main class="content-area">
 
+      <!-- ══════════════════════════════════════════════════════════
+           MOBILE STATUS HUB (Tampil Khusus Mode Mobile / Layar HP)
+           Menampilkan Status Database Supabase & Hardware ESP32
+      ══════════════════════════════════════════════════════════ -->
+      <div class="mobile-status-hub" id="mobile-status-hub">
+        <div class="m-status-row">
+          <!-- 1. Status Database Supabase -->
+          <div class="m-status-card">
+            <div class="m-status-main">
+              <span class="pulse-dot demo" id="m-db-status-dot"></span>
+              <div class="m-status-info">
+                <span class="m-status-category">Database</span>
+                <span class="m-status-name" id="m-db-status-text">Database: Memeriksa...</span>
+                <span class="m-status-sub" id="m-db-status-sub">Supabase Cloud</span>
+              </div>
+            </div>
+            <button type="button" class="btn-m-quick-demo" id="btn-m-quick-demo-toggle" title="Klik untuk beralih mode sumber data">
+              <span id="m-quick-demo-toggle-label">🧪 Buka Demo</span>
+            </button>
+          </div>
+
+          <!-- 2. Status Hardware ESP32 -->
+          <div class="m-status-card">
+            <div class="m-status-main">
+              <span class="pulse-dot offline" id="m-esp32-dot"></span>
+              <div class="m-status-info">
+                <span class="m-status-category">Hardware ESP32</span>
+                <span class="m-status-name" id="m-esp32-text">ESP32: Memeriksa...</span>
+                <span class="m-status-sub" id="m-esp32-time">Menunggu koneksi...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ────────────────────────────────────────────────────────────
            VIEW 1: DASHBOARD
       ──────────────────────────────────────────────────────────── -->
@@ -151,6 +189,180 @@
           </div>
           <div class="cond-badge normal" id="cond-badge">
             Kondisi Normal
+          </div>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════════
+             PANEL UJI INTERAKTIF SEMINAR HASIL (MODE DEMO)
+        ══════════════════════════════════════════════════════════ -->
+        <div class="demo-interactive-panel" id="demo-interactive-panel">
+          <div class="demo-panel-header">
+            <div class="demo-panel-title-wrap">
+              <span class="demo-panel-badge">
+                <span class="pulse-dot demo" style="width:8px;height:8px;"></span>
+                <span>Mode Demo / Uji Semhas</span>
+              </span>
+              <span class="demo-panel-subtitle">Input nilai 3 parameter untuk menguji respon aktuator &amp; FLC Mamdani
+                secara riil</span>
+            </div>
+
+            <div class="demo-panel-actions">
+              <!-- Switch Submode: Manual vs Auto (Tampilan Responsif Mobile & Desktop) -->
+              <div class="demo-submode-switch">
+                <button type="button" class="btn-submode active" id="btn-demo-manual"
+                  title="Input nilai tetap untuk pengujian dosen (mengambil alih aktuator fisik)">
+                  <span class="btn-submode-icon">⚡</span>
+                  <div class="btn-submode-text">
+                    <span class="submode-title">Input Manual</span>
+                    <span class="submode-desc">Kendali Aktuator</span>
+                  </div>
+                </button>
+                <button type="button" class="btn-submode" id="btn-demo-auto"
+                  title="Grafik bergerak otomatis tiap 3 detik (simulasi layar saja)">
+                  <span class="btn-submode-icon">🌊</span>
+                  <div class="btn-submode-text">
+                    <span class="submode-title">Osilasi Otomatis</span>
+                    <span class="submode-desc">Simulasi Layar</span>
+                  </div>
+                </button>
+              </div>
+
+              <!-- Baris Aksi Tambahan: WiFi IP, Sensor Realtime, & Collapse -->
+              <div class="demo-actions-subrow">
+                <!-- Tombol Cepat Konfigurasi IP WiFi ESP32 (Hotspot HP) -->
+                <button type="button" class="btn-demo-wifi" id="btn-demo-wifi-ip"
+                  title="IP ESP32 pada Hotspot HP. Klik untuk atur IP jika berbeda (Default: smartfarm.local atau 192.168.4.1)">
+                  <span>📶</span>
+                  <span id="demo-wifi-label">ESP32: <b id="demo-wifi-ip-val">smartfarm.local</b></span>
+                </button>
+
+                <!-- Tombol Keluar dari Mode Demo dan Kembali ke Sensor Realtime -->
+                <button type="button" class="btn-demo-exit" id="btn-exit-demo"
+                  title="Keluar dari mode demo dan kembali ke pembacaan sensor fisik realtime">
+                  <span>📡</span>
+                  <span>Sensor Realtime</span>
+                </button>
+
+                <button type="button" class="btn-demo-collapse" id="btn-demo-collapse"
+                  title="Sembunyikan / Tampilkan Panel">▼</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="demo-panel-body" id="demo-panel-body">
+            <!-- 3 Parameter Input Controllers (Slider + Number Box) -->
+            <div class="demo-inputs-grid">
+              <!-- Parameter 1: Suhu Udara -->
+              <div class="demo-param-card">
+                <div class="demo-param-header">
+                  <span class="demo-param-label">🌡️ Input Suhu Udara:</span>
+                  <div class="demo-num-input-wrap">
+                    <input type="number" id="demo-input-temp" min="10" max="40" step="0.5" value="24.0"
+                      class="demo-num-input">
+                    <span class="demo-num-unit">°C</span>
+                  </div>
+                </div>
+                <input type="range" id="demo-slider-temp" min="10" max="40" step="0.5" value="24.0"
+                  class="demo-range-slider temp-slider">
+                <div class="demo-range-stops">
+                  <span>10°C (Dingin)</span>
+                  <span>Ideal 20–25°C</span>
+                  <span>40°C (Panas)</span>
+                </div>
+              </div>
+
+              <!-- Parameter 2: Kelembaban Udara -->
+              <div class="demo-param-card">
+                <div class="demo-param-header">
+                  <span class="demo-param-label">💧 Input Kelembapan:</span>
+                  <div class="demo-num-input-wrap">
+                    <input type="number" id="demo-input-humid" min="20" max="100" step="1" value="65.0"
+                      class="demo-num-input">
+                    <span class="demo-num-unit">%</span>
+                  </div>
+                </div>
+                <input type="range" id="demo-slider-humid" min="20" max="100" step="1" value="65.0"
+                  class="demo-range-slider humid-slider">
+                <div class="demo-range-stops">
+                  <span>20% (Kering)</span>
+                  <span>Ideal 60–80%</span>
+                  <span>100% (Basah)</span>
+                </div>
+              </div>
+
+              <!-- Parameter 3: Gas Amonia -->
+              <div class="demo-param-card">
+                <div class="demo-param-header">
+                  <span class="demo-param-label">☁️ Input Gas Amonia:</span>
+                  <div class="demo-num-input-wrap">
+                    <input type="number" id="demo-input-nh3" min="0" max="50" step="0.5" value="12.0"
+                      class="demo-num-input">
+                    <span class="demo-num-unit">ppm</span>
+                  </div>
+                </div>
+                <input type="range" id="demo-slider-nh3" min="0" max="50" step="0.5" value="12.0"
+                  class="demo-range-slider nh3-slider">
+                <div class="demo-range-stops">
+                  <span>0 ppm (Aman)</span>
+                  <span>Batas 20 ppm</span>
+                  <span>50 ppm (Bahaya)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Presets for Seminar Hasil Defense -->
+            <div class="demo-presets-wrap">
+              <span class="demo-presets-title">🎯 Skenario Uji Sidang Semhas (1-Klik):</span>
+              <div class="demo-presets-row">
+                <button type="button" class="btn-preset" data-preset="cold">
+                  ❄️ Dingin (15°C, 55%, 6 ppm) &rarr; <span class="preset-tag">Pemanas ON</span>
+                </button>
+                <button type="button" class="btn-preset" data-preset="normal">
+                  🌿 Ideal (24°C, 65%, 10 ppm) &rarr; <span class="preset-tag">Standby</span>
+                </button>
+                <button type="button" class="btn-preset" data-preset="hot">
+                  ☀️ Panas (35°C, 70%, 12 ppm) &rarr; <span class="preset-tag">Kipas 100%</span>
+                </button>
+                <button type="button" class="btn-preset" data-preset="ammonia">
+                  ⚠️ Amonia Tinggi (26°C, 75%, 32 ppm) &rarr; <span class="preset-tag">Konveyor ON</span>
+                </button>
+                <button type="button" class="btn-preset" data-preset="danger">
+                  🚨 Bahaya Kritis (37°C, 92%, 42 ppm) &rarr; <span class="preset-tag">Semua Aktif</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Live Actuator Output Summary Bar -->
+            <div class="demo-feedback-bar">
+              <div class="demo-feedback-item">
+                <span class="demo-fb-icon">🌀</span>
+                <span class="demo-fb-name">Kipas Intake:</span>
+                <span class="demo-fb-val" id="demo-fb-fan-in">0% PWM</span>
+              </div>
+              <div class="demo-feedback-item">
+                <span class="demo-fb-icon">💨</span>
+                <span class="demo-fb-name">Kipas Exhaust:</span>
+                <span class="demo-fb-val" id="demo-fb-fan-out">0% PWM</span>
+              </div>
+              <div class="demo-feedback-item">
+                <span class="demo-fb-icon">🔥</span>
+                <span class="demo-fb-name">Lampu Pemanas:</span>
+                <span class="demo-fb-val" id="demo-fb-heater">0% PWM</span>
+              </div>
+              <div class="demo-feedback-item">
+                <span class="demo-fb-icon">⚙️</span>
+                <span class="demo-fb-name">Motor Konveyor:</span>
+                <span class="demo-fb-val" id="demo-fb-conveyor">OFF</span>
+              </div>
+              <div class="demo-feedback-item demo-hw-feedback-item">
+                <span class="demo-fb-icon" id="hw-conn-dot">⚪</span>
+                <span class="demo-fb-name">Aktuator Fisik:</span>
+                <span class="demo-fb-val" id="demo-hw-status-text">Standby</span>
+              </div>
+              <div class="demo-feedback-status" id="demo-fb-status">
+                Kondisi Normal
+              </div>
+            </div>
           </div>
         </div>
 
@@ -177,18 +389,18 @@
                   <div class="card-sensor-type">Sensor SHT31</div>
                 </div>
               </div>
-              <span class="card-badge normal" id="badge-temp">NORMAL</span>
+              <span class="card-badge offline" id="badge-temp">OFFLINE</span>
             </div>
             <div class="card-value-row">
-              <span class="card-value" id="val-temp">--.-</span>
+              <span class="card-value" id="val-temp">--</span>
               <span class="card-unit">°C</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar normal" id="bar-temp" style="width: 45%;"></div>
+              <div class="progress-bar" id="bar-temp" style="width: 0%;"></div>
             </div>
             <div class="card-subtext">
               <span>Zona Nyaman: 20–25°C</span>
-              <span>Batas Kritis: &gt; 32°C</span>
+              <span>Batas Kritis: &ge; 31°C</span>
             </div>
           </div>
 
@@ -202,18 +414,18 @@
                   <div class="card-sensor-type">Sensor SHT31</div>
                 </div>
               </div>
-              <span class="card-badge normal" id="badge-humid">NORMAL</span>
+              <span class="card-badge offline" id="badge-humid">OFFLINE</span>
             </div>
             <div class="card-value-row">
-              <span class="card-value" id="val-humid">--.-</span>
+              <span class="card-value" id="val-humid">--</span>
               <span class="card-unit">%</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar normal" id="bar-humid" style="width: 60%;"></div>
+              <div class="progress-bar" id="bar-humid" style="width: 0%;"></div>
             </div>
             <div class="card-subtext">
-              <span>Ideal: 60–80%</span>
-              <span>Batas Kritis: &gt; 90%</span>
+              <span>Optimal: 60–80%</span>
+              <span>Batas Kritis: &ge; 90%</span>
             </div>
           </div>
 
@@ -227,14 +439,14 @@
                   <div class="card-sensor-type">Sensor MQ-135</div>
                 </div>
               </div>
-              <span class="card-badge normal" id="badge-ammonia">NORMAL</span>
+              <span class="card-badge offline" id="badge-ammonia">OFFLINE</span>
             </div>
             <div class="card-value-row">
-              <span class="card-value" id="val-ammonia">--.-</span>
+              <span class="card-value" id="val-ammonia">--</span>
               <span class="card-unit">ppm</span>
             </div>
             <div class="progress-track">
-              <div class="progress-bar normal" id="bar-ammonia" style="width: 25%;"></div>
+              <div class="progress-bar" id="bar-ammonia" style="width: 0%;"></div>
             </div>
             <div class="card-subtext">
               <span>Batas Aman: &lt; 20 ppm</span>
@@ -257,7 +469,7 @@
 
         <div class="actuator-grid">
           <!-- Kipas Intake -->
-          <div class="actuator-card on" id="act-fan-in">
+          <div class="actuator-card" id="act-fan-in">
             <div class="actuator-top">
               <div class="actuator-header-info">
                 <div class="actuator-icon">🌀</div>
@@ -266,15 +478,15 @@
                   <div class="actuator-pin">GPIO 16 (MOSFET PWM)</div>
                 </div>
               </div>
-              <span class="actuator-status-pill" id="pill-fan-in">ON</span>
+              <span class="actuator-status-pill" id="pill-fan-in">OFF</span>
             </div>
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
                 <span>Output PWM:</span>
-                <span id="duty-val-fan-in" style="font-family:var(--font-mono);font-weight:700;">100%</span>
+                <span id="duty-val-fan-in" style="font-family:var(--font-mono);font-weight:700;">--%</span>
               </div>
               <div class="actuator-duty-bar">
-                <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 100%;"></div>
+                <div class="actuator-duty-fill" id="duty-fill-fan-in" style="width: 0%;"></div>
               </div>
             </div>
             <div
@@ -285,7 +497,7 @@
           </div>
 
           <!-- Kipas Exhaust -->
-          <div class="actuator-card on" id="act-fan-out">
+          <div class="actuator-card" id="act-fan-out">
             <div class="actuator-top">
               <div class="actuator-header-info">
                 <div class="actuator-icon">💨</div>
@@ -294,15 +506,15 @@
                   <div class="actuator-pin">GPIO 17 (MOSFET PWM)</div>
                 </div>
               </div>
-              <span class="actuator-status-pill" id="pill-fan-out">ON</span>
+              <span class="actuator-status-pill" id="pill-fan-out">OFF</span>
             </div>
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
                 <span>Output PWM:</span>
-                <span id="duty-val-fan-out" style="font-family:var(--font-mono);font-weight:700;">100%</span>
+                <span id="duty-val-fan-out" style="font-family:var(--font-mono);font-weight:700;">--%</span>
               </div>
               <div class="actuator-duty-bar">
-                <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 100%;"></div>
+                <div class="actuator-duty-fill" id="duty-fill-fan-out" style="width: 0%;"></div>
               </div>
             </div>
             <div
@@ -327,7 +539,7 @@
             <div class="actuator-duty-wrap">
               <div style="display:flex;justify-content:space-between;">
                 <span>Output PWM:</span>
-                <span id="duty-val-heater" style="font-family:var(--font-mono);font-weight:700;">0%</span>
+                <span id="duty-val-heater" style="font-family:var(--font-mono);font-weight:700;">--%</span>
               </div>
               <div class="actuator-duty-bar">
                 <div class="actuator-duty-fill" id="duty-fill-heater" style="width: 0%;"></div>
@@ -707,7 +919,8 @@
 
         <!-- Log Table Card -->
         <div class="fuzzy-overview-card log-table-card" style="padding:18px;">
-          <div class="log-table-header-info" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+          <div class="log-table-header-info"
+            style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
             <div style="font-size:13px;font-weight:700;color:var(--text-main);display:flex;align-items:center;gap:6px;">
               <span>📊 Data Riwayat Telemetri</span>
             </div>
@@ -762,7 +975,8 @@
             </h3>
             <div class="info-table-row">
               <span class="info-label">Judul Penelitian</span>
-              <span class="info-val" style="font-size:11.5px;max-width:340px;text-align:right;line-height:1.4;">Rancang Bangun Sistem
+              <span class="info-val" style="font-size:11.5px;max-width:340px;text-align:right;line-height:1.4;">Rancang
+                Bangun Sistem
                 Otomatisasi Mikroklimat Kandang Ayam Petelur Berbasis Fuzzy Logic Controller</span>
             </div>
             <div class="info-table-row">
@@ -844,7 +1058,8 @@
             </div>
             <div class="info-table-row">
               <span class="info-label">Pemicu Konveyor</span>
-              <span class="info-val" style="font-size:11px;color:var(--warning);">Amonia &ge; 20.0 ppm (Set S, T, ST)</span>
+              <span class="info-val" style="font-size:11px;color:var(--warning);">Amonia &ge; 20.0 ppm (Set S, T,
+                ST)</span>
             </div>
           </div>
 
@@ -966,8 +1181,8 @@
   </div>
 
   <!-- Konfigurasi Supabase & Script Aplikasi Native -->
-  <script src="config.js?v=3.4"></script>
-  <script src="app.js?v=3.4"></script>
+  <script src="config.js?v=5.5"></script>
+  <script src="app.js?v=5.5"></script>
 </body>
 
 </html>

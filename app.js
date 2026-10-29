@@ -18,13 +18,17 @@
 (function () {
   'use strict';
 
-  // ─── AMBANG BATAS STANDAR MIKROKLIMAT AYAM PETELUR ───────────
-  // Sesuai Bab III Proposal: Amonia < 20 ppm (Normal/Aman), 20-30 ppm (Waspada/Konveyor ON), >= 30 ppm (Bahaya)
-  const THRESHOLDS = {
-    temperature: { min: 10, max: 40, warning: 27, danger: 31 },
-    humidity:    { min: 20, max: 100, warning: 85, danger: 92 },
-    ammonia:     { min: 0,  max: 50,  warning: 20, danger: 30 }
-  };
+  // ─── AMBANG BATAS STANDAR MIKROKLIMAT AYAM PETELUR (BAB III PROPOSAL) ───
+  // Sesuai Bab III Proposal Skripsi Dian Lestari Kurniawati:
+  // 1. Suhu Udara: Dingin < 18°C, Ideal/Normal 20–25°C, Waspada Panas >= 27°C, Bahaya >= 31°C
+  // 2. Kelembapan: Optimal 60–80%, Waspada >= 85%, Bahaya >= 92%
+  // 3. Gas Amonia: Aman < 20 ppm, Waspada/Konveyor ON >= 20 ppm, Bahaya Kritis >= 30 ppm
+  const THRESHOLDS = Object.freeze({
+    temperature: { min: 10, max: 40, minCold: 18.0, warning: 27.0, danger: 31.0 },
+    humidity:    { min: 20, max: 100, minDry: 50.0,  warning: 85.0, danger: 92.0 },
+    ammonia:     { min: 0,  max: 50,  warning: 20.0, danger: 30.0 }
+  });
+  try { localStorage.removeItem('smartfarm_thresholds'); } catch (e) {}
 
   // Baca konfigurasi dari config.js atau localStorage
   const savedConfig = window.SMARTFARM_CONFIG || {};
@@ -39,6 +43,12 @@
   const state = {
     currentView: 'dashboard',
     connectionMode: storedMode, // 'supabase' | 'demo' | 'esp32'
+    demoSubMode: localStorage.getItem('smartfarm_demo_submode') || 'manual', // 'manual' | 'auto'
+    demoValues: {
+      suhu: 24.0,
+      kelembapan: 65.0,
+      amonia: 10.0
+    },
     esp32Ip: localStorage.getItem('smartfarm_esp32_ip') || 'http://192.168.4.1',
     supabaseUrl: storedUrl,
     supabaseKey: storedKey,
@@ -54,6 +64,8 @@
     },
     isHardwareOnline: false,
     latestRow: null,
+    lastTelemetryId: null,
+    lastTelemetryCreatedAt: null,
 
     // Actuator states (PWM 0-100 & Konveyor boolean)
     actuators: {
@@ -195,6 +207,12 @@
       return { yStar: 8.3, pwm: 0 };
     }
 
+    // Jika hanya term 0 (Mati) yang aktif (tidak ada term Rendah..Maksimal yang aktif),
+    // maka aktuator secara tegas 0% PWM (Mati)
+    if (betas[1] <= 0.0001 && betas[2] <= 0.0001 && betas[3] <= 0.0001 && betas[4] <= 0.0001) {
+      return { yStar: 8.3, pwm: 0 };
+    }
+
     let num = 0;
     let den = 0;
     const dy = 0.5;
@@ -244,14 +262,19 @@
 
     // Persamaan 3.2: Scaling PWM dari domain [8.3 .. 91.7] ke [0 .. 100]
     const pwmRaw = ((yStar - 8.3) / (91.7 - 8.3)) * 100;
-    const pwm = Math.max(0, Math.min(100, Math.round(pwmRaw)));
+    let pwm = Math.max(0, Math.min(100, Math.round(pwmRaw)));
+
+    // Deadband thresholding untuk mencegah residual numerik kliping segitiga siku-siku
+    if (pwm <= 2 && betas[1] <= 0.05 && betas[2] <= 0.05 && betas[3] <= 0.05 && betas[4] <= 0.05) {
+      pwm = 0;
+    }
 
     return { yStar: +yStar.toFixed(2), pwm };
   }
 
-  // ─── MESIN UTAMA FLC MAMDANI 125 RULE ─────────────────────────
+  // ─── MESIN UTAMA FLC MAMDANI 125 RULE (BAB III PROPOSAL SKRIPSI) ───
   function computeFuzzyMamdani(temp, humid, nh3) {
-    // 1. Fuzzifikasi Suhu (10–40 °C)
+    // 1. Fuzzifikasi Suhu (10–40 °C) sesuai Bab III Proposal
     const muT = [
       calcLeftShoulder(temp, 14, 18),        // SD: Sangat Dingin [10, 10, 14, 18]
       calcTri(temp, 14, 18, 20),             // D: Dingin [14, 18, 18, 20]
@@ -260,7 +283,7 @@
       calcRightShoulder(temp, 27, 31)        // SP: Sangat Panas [27, 31, 40, 40]
     ];
 
-    // 2. Fuzzifikasi Kelembapan (20–100 %RH)
+    // 2. Fuzzifikasi Kelembapan (20–100 %RH) sesuai Bab III Proposal
     const muH = [
       calcLeftShoulder(humid, 40, 50),       // SK: Sangat Kering [20, 20, 40, 50]
       calcTri(humid, 40, 50, 60),            // K: Kering [40, 50, 50, 60]
@@ -269,7 +292,7 @@
       calcRightShoulder(humid, 85, 92)       // SB: Sangat Basah [85, 92, 100, 100]
     ];
 
-    // 3. Fuzzifikasi Gas Amonia (0–50 ppm)
+    // 3. Fuzzifikasi Gas Amonia (0–50 ppm) sesuai Bab III Proposal
     // Sesuai Tabel Baku: SR (< 10 ppm), R (10–20 ppm), S (20–30 ppm), T (30–40 ppm), ST (> 40 ppm)
     const muA = [
       calcLeftShoulder(nh3, 5, 15),          // SR: Sangat Aman (< 10 ppm) [0, 0, 5, 15]
@@ -317,14 +340,22 @@
     const resEx = defuzzifyCentroid(betasEx);
     const resHt = defuzzifyCentroid(betasHt);
 
-    // 6. Logika Relai Biner Motor Konveyor (GPIO 27)
-    // Sesuai Proposal & Tabel Aksi Aktuator: Aktif jika Amonia >= 20 ppm (S, T, ST) ATAU Kelembapan > 90% (SB)
+    // Proteksi & Penyesuaian Logika Lampu Pemanas (GPIO 23):
+    // Pemanas hanya aktif saat suhu dingin (Suhu < 20°C, term SD & D).
+    // Pada suhu ideal/normal (18-27°C, khususnya >= 20°C) atau panas (>= 27°C),
+    // lampu pemanas WAJIB mati total (0% PWM & status OFF).
+    if (temp >= 20.0 || (betasHt[1] <= 0.0001 && betasHt[2] <= 0.0001 && betasHt[3] <= 0.0001 && betasHt[4] <= 0.0001)) {
+      resHt.pwm = 0;
+      resHt.yStar = 8.3;
+    }
+
+    // 6. Logika Relai Biner Motor Konveyor (GPIO 27) Sesuai Bab III Proposal:
+    // Aktif jika Amonia >= 20 ppm (Waspada/Bahaya) ATAU Kelembapan > 90% (Sangat Basah)
     const conveyorState = (nh3 >= 20.0 || humid > 90.0);
 
-    // 7. Penentuan Label Kondisi Mikroklimat Kandang
-    // Sesuai Ambang Batas Proposal: Amonia < 20 ppm Normal (Aman), 20-30 ppm Waspada, >= 30 ppm Bahaya
-    const isDanger = nh3 >= THRESHOLDS.ammonia.danger || temp >= THRESHOLDS.temperature.danger || temp <= 14.0;
-    const isWarning = nh3 >= THRESHOLDS.ammonia.warning || temp >= THRESHOLDS.temperature.warning || temp <= 18.0 || humid >= THRESHOLDS.humidity.warning;
+    // 7. Penentuan Label Kondisi Mikroklimat Kandang Baku Proposal:
+    const isDanger = (nh3 >= 30.0 || temp >= 31.0 || temp <= 14.0);
+    const isWarning = (nh3 >= 20.0 || temp >= 27.0 || temp <= 18.0 || humid >= 85.0);
     const conditionLabel = isDanger ? 'Kondisi Bahaya' : (isWarning ? 'Kondisi Waspada' : 'Kondisi Normal');
     const statusClass = isDanger ? 'danger' : (isWarning ? 'warning' : 'normal');
 
@@ -484,19 +515,423 @@
 
   function tickDemoData() {
     const now = new Date();
-    const t = now.getTime();
+    if (state.demoSubMode === 'manual') {
+      // Pada mode manual (Uji Semhas), gunakan nilai input manual pengguna secara stabil & tunggu input
+      updateTelemetryData({
+        suhu: state.demoValues.suhu,
+        kelembapan: state.demoValues.kelembapan,
+        amonia: state.demoValues.amonia,
+        created_at: now.toISOString(),
+        _isDemoData: true
+      });
+      syncDemoInputs(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+      updateDemoFeedbackBar();
+      // Keepalive nirkabel berkala ke ESP32 fisik agar kontrol aktuator tidak timeout
+      sendHardwareDemoCommand(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia, true);
+      return;
+    }
 
+    const t = now.getTime();
     // Osilasi halus mensimulasikan lingkungan kandang ayam petelur
     const suhu = +(23.8 + Math.sin(t / 25000) * 4.5 + (Math.random() - 0.5) * 0.6).toFixed(1);
     const kelembapan = +(67.5 + Math.cos(t / 20000) * 8.0 + (Math.random() - 0.5) * 1.0).toFixed(1);
     const amonia = +(13.2 + Math.sin(t / 18000) * 5.5 + (Math.random() - 0.5) * 0.8).toFixed(1);
 
+    state.demoValues.suhu = suhu;
+    state.demoValues.kelembapan = kelembapan;
+    state.demoValues.amonia = amonia;
+
+    syncDemoInputs(suhu, kelembapan, amonia);
+
     updateTelemetryData({
       suhu,
       kelembapan,
       amonia,
-      created_at: now.toISOString()
+      created_at: now.toISOString(),
+      _isDemoData: true
     });
+
+    updateDemoFeedbackBar();
+  }
+
+  // ─── KONTROL FISIK HARDWARE ESP32 VIA WEB SERIAL (USB) & HTTP ───
+  let serialPort = null;
+  let serialWriter = null;
+  let isSerialConnected = false;
+  let lastHardwareCmd = '';
+  let hwDebounceTimer = null;
+
+  async function connectUsbEsp32() {
+    if (!('serial' in navigator)) {
+      alert('Browser Anda tidak mendukung Web Serial API. Untuk mengendalikan modul hardware ESP32 secara langsung via USB, silakan gunakan Google Chrome atau Microsoft Edge.');
+      return;
+    }
+
+    if (isSerialConnected) {
+      try {
+        sendHardwareAutoCommand();
+        if (serialWriter) {
+          await serialWriter.close();
+          serialWriter = null;
+        }
+        if (serialPort) {
+          await serialPort.close();
+          serialPort = null;
+        }
+      } catch (e) {
+        console.warn('Error saat menutup serial port:', e);
+      }
+      isSerialConnected = false;
+      updateUsbButtonUI(false);
+      return;
+    }
+
+    try {
+      serialPort = await navigator.serial.requestPort();
+      await serialPort.open({ baudRate: 115200 });
+      const textEncoder = new TextEncoderStream();
+      textEncoder.readable.pipeTo(serialPort.writable);
+      serialWriter = textEncoder.writable.getWriter();
+      isSerialConnected = true;
+      updateUsbButtonUI(true);
+
+      // Jika saat ini di submode manual, langsung ambil alih aktuator fisik dengan nilai saat ini
+      if (state.demoSubMode === 'manual') {
+        sendHardwareDemoCommand(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+      }
+    } catch (err) {
+      if (err.name !== 'NotFoundError') {
+        console.error('Gagal menghubungkan serial port:', err);
+        alert('Gagal menghubungkan ke ESP32 via USB: ' + err.message);
+      }
+      isSerialConnected = false;
+      updateUsbButtonUI(false);
+    }
+  }
+
+  function updateUsbButtonUI(connected) {
+    const btnUsb = document.getElementById('btn-connect-usb-esp32');
+    const label = document.getElementById('usb-btn-label');
+    const icon = document.getElementById('usb-status-icon');
+    const hwDot = document.getElementById('hw-conn-dot');
+    const hwText = document.getElementById('demo-hw-status-text');
+
+    if (btnUsb) {
+      if (connected) {
+        btnUsb.classList.add('connected');
+        if (label) label.textContent = 'ESP32 USB Terhubung (Putuskan)';
+        if (icon) icon.textContent = '🟢';
+      } else {
+        btnUsb.classList.remove('connected');
+        if (label) label.textContent = 'Hubungkan ESP32 (USB)';
+        if (icon) icon.textContent = '🔌';
+      }
+    }
+
+    if (hwDot && hwText) {
+      if (connected) {
+        hwDot.textContent = '🟢';
+        hwText.textContent = 'Diambil Alih (Fisik Aktif)';
+        hwText.style.color = '#059669';
+      } else {
+        hwDot.textContent = '⚪';
+        hwText.textContent = 'Standby (Sensor Fisik)';
+        hwText.style.color = 'var(--text-muted)';
+      }
+    }
+  }
+
+  async function testEsp32Connection(targetUrl) {
+    const hwDot = document.getElementById('hw-conn-dot');
+    const hwText = document.getElementById('demo-hw-status-text');
+    if (hwDot) hwDot.textContent = '🔄';
+    if (hwText) {
+      hwText.textContent = 'Menguji koneksi WiFi ESP32...';
+      hwText.style.color = '#D97706';
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`${targetUrl}/api/ping`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        if (hwDot) hwDot.textContent = '🟢';
+        if (hwText) {
+          hwText.textContent = `Terkendali (${targetUrl.replace(/^https?:\/\//, '')})`;
+          hwText.style.color = '#059669';
+        }
+        return true;
+      }
+    } catch (e) {
+      console.warn('Uji ping ke ESP32 gagal:', e);
+    }
+
+    if (hwDot) hwDot.textContent = '🟡';
+    if (hwText) {
+      hwText.textContent = `Menghubungkan ke ${targetUrl.replace(/^https?:\/\//, '')}...`;
+      hwText.style.color = '#D97706';
+    }
+    return false;
+  }
+
+  let isSendingDemoCmd = false;
+
+  async function sendHardwareDemoCommand(suhu, kelembapan, amonia, isKeepalive = false) {
+    // Sesuai permintaan: yang demo otomatis tidak perlu bisa mengontrol aktuator fisik
+    if (state.demoSubMode !== 'manual') return;
+
+    const s = Number(suhu).toFixed(1);
+    const k = Number(kelembapan).toFixed(1);
+    const a = Number(amonia).toFixed(1);
+    const cmd = `SET ${s} ${k} ${a}`;
+
+    if (!isKeepalive && cmd === lastHardwareCmd) return;
+    lastHardwareCmd = cmd;
+
+    // 1. Kirim via Web Serial (Kabel Data USB ESP32 jika terhubung)
+    if (serialWriter && isSerialConnected) {
+      try {
+        await serialWriter.write(cmd + '\n');
+        console.log('[ESP32 USB SERIAL SENT]', cmd);
+      } catch (e) {
+        console.warn('Gagal kirim via Web Serial:', e);
+      }
+    }
+
+    // 2. Kirim via Local HTTP ke ESP32 pada Hotspot HP / mDNS / SoftAP
+    const endpoints = [];
+    if (state.esp32Ip) endpoints.push(state.esp32Ip.replace(/\/+$/, ''));
+    if (!endpoints.includes('http://smartfarm.local')) endpoints.push('http://smartfarm.local');
+    if (!endpoints.includes('http://192.168.4.1')) endpoints.push('http://192.168.4.1');
+
+    if (isSendingDemoCmd && isKeepalive) return;
+    isSendingDemoCmd = true;
+
+    let successBase = null;
+    for (const baseUrl of endpoints) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        const res = await fetch(`${baseUrl}/api/demo?suhu=${s}&kelembapan=${k}&amonia=${a}`, {
+          method: 'GET',
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          successBase = baseUrl;
+          break;
+        }
+      } catch (e) {
+        // Coba endpoint alternatif berikutnya
+      }
+    }
+    isSendingDemoCmd = false;
+
+    // Perbarui indikator visual koneksi hardware fisik di bar feedback demo
+    const hwDot = document.getElementById('hw-conn-dot');
+    const hwText = document.getElementById('demo-hw-status-text');
+
+    if (successBase) {
+      if (state.esp32Ip !== successBase) {
+        state.esp32Ip = successBase;
+        localStorage.setItem('smartfarm_esp32_ip', successBase);
+        updateWifiIpButton();
+      }
+      if (hwDot) hwDot.textContent = '🟢';
+      if (hwText) {
+        const cleanIp = successBase.replace(/^https?:\/\//, '');
+        hwText.textContent = `Terkendali (${cleanIp})`;
+        hwText.style.color = '#059669';
+      }
+    } else if (isSerialConnected) {
+      if (hwDot) hwDot.textContent = '🟢';
+      if (hwText) {
+        hwText.textContent = 'Terkendali (USB)';
+        hwText.style.color = '#059669';
+      }
+    } else {
+      if (hwDot) hwDot.textContent = '🟡';
+      if (hwText) {
+        const cleanIp = (state.esp32Ip || 'smartfarm.local').replace(/^https?:\/\//, '');
+        hwText.textContent = `Menghubungkan ke ${cleanIp}...`;
+        hwText.style.color = '#D97706';
+      }
+    }
+  }
+
+  function sendHardwareAutoCommand() {
+    lastHardwareCmd = 'AUTO';
+    if (serialWriter && isSerialConnected) {
+      try {
+        serialWriter.write('AUTO\n');
+        console.log('[ESP32 USB SERIAL SENT] AUTO');
+      } catch (e) {
+        console.warn('Gagal kirim AUTO:', e);
+      }
+    }
+    const endpoints = [];
+    if (state.esp32Ip) endpoints.push(state.esp32Ip.replace(/\/+$/, ''));
+    if (!endpoints.includes('http://smartfarm.local')) endpoints.push('http://smartfarm.local');
+    if (!endpoints.includes('http://192.168.4.1')) endpoints.push('http://192.168.4.1');
+
+    endpoints.forEach(async (baseUrl) => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        await fetch(`${baseUrl}/api/auto`, { method: 'GET', signal: controller.signal });
+        clearTimeout(timeoutId);
+      } catch (e) {}
+    });
+
+    const hwDot = document.getElementById('hw-conn-dot');
+    const hwText = document.getElementById('demo-hw-status-text');
+    if (hwDot) hwDot.textContent = '⚪';
+    if (hwText) {
+      hwText.textContent = 'Standby (Sensor Fisik)';
+      hwText.style.color = 'var(--text-muted)';
+    }
+  }
+
+  // ─── FUNGSI PERALIHAN MODE SUMBER DATA (REALTIME vs DEMO) ───
+  function switchConnectionMode(newMode) {
+    const prevMode = state.connectionMode;
+    state.connectionMode = newMode;
+    localStorage.setItem('smartfarm_conn_mode', newMode);
+
+    if (newMode === 'demo') {
+      localStorage.setItem('smartfarm_manual_demo', 'true');
+      state.demoSubMode = 'manual';
+      localStorage.setItem('smartfarm_demo_submode', 'manual');
+
+      const btnDemoManual = document.getElementById('btn-demo-manual');
+      const btnDemoAuto = document.getElementById('btn-demo-auto');
+      if (btnDemoManual && btnDemoAuto) {
+        btnDemoManual.classList.add('active');
+        btnDemoAuto.classList.remove('active');
+      }
+
+      // Bersihkan buffer histori lama dan inisialisasi grafik simulasi
+      state.history = [];
+      initMockHistory();
+
+      // Langsung set dari kondisi IDEAL (24.0°C, 65.0%, 10.0 ppm) & murni menunggu inputan pengguna
+      applyDemoValues(24.0, 65.0, 10.0);
+    } else {
+      localStorage.removeItem('smartfarm_manual_demo');
+      // Beritahu ESP32 bahwa mode simulasi selesai, seketika baca sensor fisik kandang
+      sendHardwareAutoCommand();
+
+      // Reset total nilai sensor agar data simulasi tidak pernah 'nyangkut'
+      state.sensors.suhu = null;
+      state.sensors.kelembapan = null;
+      state.sensors.amonia = null;
+      state.sensors.timestamp = null;
+      state.latestRow = null;
+      state.lastTelemetryId = null;
+      state.lastTelemetryCreatedAt = null;
+      state.lastEsp32Heartbeat = null;
+      state.isHardwareOnline = false;
+      state.fuzzy = null;
+      state.history = [];
+    }
+
+    renderUI();
+    restartPolling();
+  }
+
+  function applyDemoValues(suhu, kelembapan, amonia) {
+    state.demoValues.suhu = parseFloat(suhu);
+    state.demoValues.kelembapan = parseFloat(kelembapan);
+    state.demoValues.amonia = parseFloat(amonia);
+
+    syncDemoInputs(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+
+    const now = new Date();
+    updateTelemetryData({
+      suhu: state.demoValues.suhu,
+      kelembapan: state.demoValues.kelembapan,
+      amonia: state.demoValues.amonia,
+      created_at: now.toISOString(),
+      _isDemoData: true
+    });
+
+    updateDemoFeedbackBar();
+
+    // Ambil alih aktuator fisik jika submode manual aktif
+    if (state.demoSubMode === 'manual') {
+      sendHardwareDemoCommand(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+    }
+  }
+
+  function syncDemoInputs(s, k, a) {
+    const inTemp = document.getElementById('demo-input-temp');
+    const slTemp = document.getElementById('demo-slider-temp');
+    const inHum = document.getElementById('demo-input-humid');
+    const slHum = document.getElementById('demo-slider-humid');
+    const inNh3 = document.getElementById('demo-input-nh3');
+    const slNh3 = document.getElementById('demo-slider-nh3');
+
+    if (inTemp && document.activeElement !== inTemp) inTemp.value = Number(s).toFixed(1);
+    if (slTemp && document.activeElement !== slTemp) slTemp.value = s;
+    if (inHum && document.activeElement !== inHum) inHum.value = Number(k).toFixed(1);
+    if (slHum && document.activeElement !== slHum) slHum.value = k;
+    if (inNh3 && document.activeElement !== inNh3) inNh3.value = Number(a).toFixed(1);
+    if (slNh3 && document.activeElement !== slNh3) slNh3.value = a;
+
+    // Sinkronisasi ke simulator tab Fuzzy Mamdani
+    const simTemp = document.getElementById('sim-temp');
+    const simHum = document.getElementById('sim-hum');
+    const simNh3 = document.getElementById('sim-nh3');
+    if (simTemp && document.activeElement !== simTemp) {
+      simTemp.value = s;
+      const valEl = document.getElementById('sim-temp-val');
+      if (valEl) valEl.textContent = `${Number(s).toFixed(1)} °C`;
+    }
+    if (simHum && document.activeElement !== simHum) {
+      simHum.value = k;
+      const valEl = document.getElementById('sim-hum-val');
+      if (valEl) valEl.textContent = `${Number(k).toFixed(1)} %`;
+    }
+    if (simNh3 && document.activeElement !== simNh3) {
+      simNh3.value = a;
+      const valEl = document.getElementById('sim-nh3-val');
+      if (valEl) valEl.textContent = `${Number(a).toFixed(1)} ppm`;
+    }
+  }
+
+  function updateDemoFeedbackBar() {
+    const fbFanIn = document.getElementById('demo-fb-fan-in');
+    const fbFanOut = document.getElementById('demo-fb-fan-out');
+    const fbHeater = document.getElementById('demo-fb-heater');
+    const fbConveyor = document.getElementById('demo-fb-conveyor');
+    const fbStatus = document.getElementById('demo-fb-status');
+
+    if (fbFanIn) fbFanIn.textContent = `${state.actuators.pwmIntake}% PWM`;
+    if (fbFanOut) fbFanOut.textContent = `${state.actuators.pwmExhaust}% PWM`;
+    if (fbHeater) fbHeater.textContent = `${state.actuators.pwmPemanas}% PWM`;
+    if (fbConveyor) {
+      fbConveyor.textContent = state.actuators.statusKonveyor ? 'ON (RELAY AKTIF)' : 'OFF (STANDBY)';
+      fbConveyor.style.color = state.actuators.statusKonveyor ? 'var(--success)' : 'var(--text-muted)';
+    }
+    if (fbStatus && state.fuzzy) {
+      fbStatus.className = `demo-feedback-status ${state.fuzzy.statusClass}`;
+      fbStatus.textContent = state.fuzzy.conditionLabel;
+    }
+
+    const hwDot = document.getElementById('hw-conn-dot');
+    const hwText = document.getElementById('demo-hw-status-text');
+    if (hwDot && hwText) {
+      if (state.demoSubMode === 'manual') {
+        hwDot.textContent = isSerialConnected ? '🟢' : '📶';
+        hwText.textContent = isSerialConnected ? 'Diambil Alih (USB)' : 'Diambil Alih (Hotspot WiFi)';
+        hwText.style.color = '#059669';
+      } else {
+        hwDot.textContent = '⚪';
+        hwText.textContent = 'Standby (Simulasi Layar)';
+        hwText.style.color = 'var(--text-muted)';
+      }
+    }
   }
 
   async function initSupabaseClient() {
@@ -531,31 +966,57 @@
 
       setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Online)');
 
-      if (latestRows && latestRows.length > 0) {
-        const latest = latestRows[0];
-        state.latestRow = latest;
-        state.lastEsp32Heartbeat = new Date(latest.created_at);
-        evaluateEsp32Status();
+      // Hanya perbarui sensor & UI jika sedang dalam Mode Realtime (Supabase).
+      // Jika pengguna sedang di Mode Simulasi, biarkan nilai simulasi tetap stabil.
+      if (state.connectionMode !== 'demo') {
+        if (latestRows && latestRows.length > 0) {
+          const latest = latestRows[0];
+          state.latestRow = latest;
+          state.lastTelemetryId = latest.id;
+          state.lastTelemetryCreatedAt = latest.created_at;
 
-        if (state.isHardwareOnline) {
-          updateTelemetryData(latest);
+          // Cek umur data di database terhadap waktu sekarang
+          const rowTime = new Date(latest.created_at).getTime();
+          const diffSec = Math.max(0, Math.round((Date.now() - rowTime) / 1000));
+
+          state.lastTelemetryId = latest.id;
+          state.lastTelemetryCreatedAt = latest.created_at;
+          state.lastEsp32Heartbeat = new Date(latest.created_at);
+
+          // ESP32 mengirim data tiap 3 detik. Jika data dibuat <= 15 detik lalu, alat benar-benar online.
+          if (diffSec <= 15) {
+            state.isHardwareOnline = true;
+            updateTelemetryData(latest);
+            setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
+          } else {
+            // Data di database sudah lampau (> 15 detik), berarti ESP32 fisik sedang OFF!
+            state.isHardwareOnline = false;
+            state.sensors.suhu = null;
+            state.sensors.kelembapan = null;
+            state.sensors.amonia = null;
+            state.sensors.timestamp = new Date(latest.created_at);
+            state.actuators.pwmIntake = 0;
+            state.actuators.pwmExhaust = 0;
+            state.actuators.pwmPemanas = 0;
+            state.actuators.statusKonveyor = false;
+            state.fuzzy = null;
+            renderUI();
+            evaluateEsp32Status();
+            setConnectionStatus(true, 'Database: Terhubung', 'ESP32 Sedang Offline');
+          }
         } else {
-          // Sensor sedang offline: Dashboard menampilkan '--' (tidak ada data aktif)
+          state.latestRow = null;
+          state.lastTelemetryId = null;
+          state.lastTelemetryCreatedAt = null;
+          state.lastEsp32Heartbeat = null;
           state.sensors.suhu = null;
           state.sensors.kelembapan = null;
           state.sensors.amonia = null;
-          state.sensors.timestamp = new Date(latest.created_at);
+          state.sensors.timestamp = null;
+          state.isHardwareOnline = false;
+          evaluateEsp32Status();
           renderUI();
         }
-      } else {
-        state.latestRow = null;
-        state.lastEsp32Heartbeat = null;
-        state.sensors.suhu = null;
-        state.sensors.kelembapan = null;
-        state.sensors.amonia = null;
-        state.sensors.timestamp = null;
-        evaluateEsp32Status();
-        renderUI();
       }
       // 2. Ambil riwayat telemetri dari database Supabase untuk grafik
       await fetchChartHistory(state.chartRange || '1h');
@@ -568,7 +1029,18 @@
         .channel('realtime_telemetry')
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'telemetry' }, (payload) => {
           const row = payload.new;
-          console.log('[Supabase Realtime] Telemetri masuk:', row);
+          console.log('[Supabase Realtime] Telemetri baru masuk:', row);
+          state.lastTelemetryId = row.id;
+          state.lastTelemetryCreatedAt = row.created_at;
+          state.lastEsp32Heartbeat = new Date(row.created_at || Date.now());
+          state.isHardwareOnline = true;
+          evaluateEsp32Status();
+
+          // Jika sedang dalam Mode Demo, jangan pernah menimpa nilai sensor & aktuator input pengguna!
+          if (state.connectionMode === 'demo') {
+            return;
+          }
+
           updateTelemetryData(row);
           setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
         })
@@ -619,16 +1091,43 @@
 
   // ─── UPDATE STATE TELEMETRI ───────────────────────────────────
   function updateTelemetryData(row) {
+    if (!row) return;
+
+    // ISOLASI TOTAL: Mode Simulasi vs Mode Realtime
+    // 1. Saat mode demo, tolak semua data yang bukan berasal dari simulasi (_isDemoData)!
+    if (state.connectionMode === 'demo' && !row._isDemoData) {
+      return;
+    }
+    // 2. Saat mode realtime, tolak data simulasi (_isDemoData) agar tidak nyangkut!
+    if (state.connectionMode !== 'demo' && row._isDemoData) {
+      return;
+    }
+
     const rawSuhu = row.suhu !== undefined ? row.suhu : row.temperature;
     const rawHumid = row.kelembapan !== undefined ? row.kelembapan : row.humidity;
     const rawAmonia = row.amonia !== undefined ? row.amonia : row.ammonia;
     const timestamp = row.created_at ? new Date(row.created_at) : new Date();
 
-    // Catat heartbeat ESP32
-    if (state.connectionMode === 'demo') {
-      state.lastEsp32Heartbeat = new Date();
-    } else if (row.created_at) {
-      state.lastEsp32Heartbeat = new Date(row.created_at);
+    // Catat heartbeat ESP32 berdasarkan waktu baris data riil (bukan waktu lokal browser)
+    state.lastEsp32Heartbeat = timestamp;
+    const diffSec = Math.max(0, Math.round((Date.now() - timestamp.getTime()) / 1000));
+    const isLive = (state.connectionMode === 'demo') || (diffSec <= 15);
+    state.isHardwareOnline = isLive;
+
+    // Jika telemetri di database sudah basi (> 15 detik) dan mode bukan demo, ESP32 sedang OFF
+    if (!isLive) {
+      state.sensors.suhu = null;
+      state.sensors.kelembapan = null;
+      state.sensors.amonia = null;
+      state.sensors.timestamp = timestamp;
+      state.actuators.pwmIntake = 0;
+      state.actuators.pwmExhaust = 0;
+      state.actuators.pwmPemanas = 0;
+      state.actuators.statusKonveyor = false;
+      state.fuzzy = null;
+      evaluateEsp32Status();
+      renderUI();
+      return;
     }
 
     evaluateEsp32Status();
@@ -641,16 +1140,6 @@
     const suhu = suhuValid ? Number(rawSuhu) : null;
     const kelembapan = humidValid ? Number(rawHumid) : null;
     const amonia = amoniaValid ? Number(rawAmonia) : null;
-
-    // Jika seluruh hardware ESP32 terputus (data lama > 15 detik), reset semua sensor
-    if (!state.isHardwareOnline && state.connectionMode !== 'demo') {
-      state.sensors.suhu = null;
-      state.sensors.kelembapan = null;
-      state.sensors.amonia = null;
-      state.sensors.timestamp = timestamp;
-      renderUI();
-      return;
-    }
 
     state.sensors.suhu = suhu;
     state.sensors.kelembapan = kelembapan;
@@ -677,17 +1166,17 @@
       };
     }
 
-    // Jika baris dari ESP32 memuat nilai aktuator nyata dari database, gunakan nilai tersebut
-    if (row.pwm_intake !== undefined && row.pwm_intake !== null && !state.actuators.isManual) {
-      state.actuators.pwmIntake = Number(row.pwm_intake);
-      state.actuators.pwmExhaust = Number(row.pwm_exhaust);
-      state.actuators.pwmPemanas = Number(row.pwm_pemanas);
-      state.actuators.statusKonveyor = Boolean(row.status_konveyor);
-    } else if (!state.actuators.isManual && state.fuzzy) {
+    // Perbarui status aktuator otomatis berdasarkan keputusan FLC Mamdani yang diselaraskan dengan Ambang Batas aktif
+    if (!state.actuators.isManual && state.fuzzy) {
       state.actuators.pwmIntake = state.fuzzy.crisp.fanIntake;
       state.actuators.pwmExhaust = state.fuzzy.crisp.fanExhaust;
       state.actuators.pwmPemanas = state.fuzzy.crisp.heater;
       state.actuators.statusKonveyor = state.fuzzy.states.conveyor;
+    } else if (row.pwm_intake !== undefined && row.pwm_intake !== null && !state.actuators.isManual) {
+      state.actuators.pwmIntake = Number(row.pwm_intake);
+      state.actuators.pwmExhaust = Number(row.pwm_exhaust);
+      state.actuators.pwmPemanas = Number(row.pwm_pemanas);
+      state.actuators.statusKonveyor = Boolean(row.status_konveyor);
     }
 
     // Rekam histori grafik secara live jika alat sedang online
@@ -725,22 +1214,29 @@
     const alerts = [];
     const ts = new Date().toLocaleTimeString('id-ID');
 
-    if (a !== null && a >= THRESHOLDS.ammonia.danger) {
-      alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a.toFixed(1)} ppm (Ambang Batas >= 20 ppm)`, time: ts });
-    } else if (a !== null && a >= THRESHOLDS.ammonia.warning) {
-      alerts.push({ type: 'warning', msg: `Gas Amonia Meningkat: ${a.toFixed(1)} ppm (Waspada >= 15 ppm)`, time: ts });
+    const minC = THRESHOLDS.temperature.minCold || 18.0;
+    const wT   = THRESHOLDS.temperature.warning;
+    const dT   = THRESHOLDS.temperature.danger;
+    const wA   = THRESHOLDS.ammonia.warning;
+    const dA   = THRESHOLDS.ammonia.danger;
+    const dH   = THRESHOLDS.humidity.danger;
+
+    if (a !== null && a >= dA) {
+      alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a.toFixed(1)} ppm (Batas Kritis ≥ ${dA} ppm — Konveyor ON)`, time: ts });
+    } else if (a !== null && a >= wA) {
+      alerts.push({ type: 'warning', msg: `Gas Amonia Waspada: ${a.toFixed(1)} ppm (Waspada ≥ ${wA} ppm — Konveyor ON)`, time: ts });
     }
 
-    if (t !== null && t >= THRESHOLDS.temperature.danger) {
-      alerts.push({ type: 'danger', msg: `Suhu Udara Ekstrem: ${t.toFixed(1)}°C (Risiko Heat Stress Tinggi > 31°C)`, time: ts });
-    } else if (t !== null && t >= THRESHOLDS.temperature.warning) {
-      alerts.push({ type: 'warning', msg: `Suhu Udara Panas: ${t.toFixed(1)}°C (Ideal 20–25°C)`, time: ts });
-    } else if (t !== null && t <= 14.0) {
-      alerts.push({ type: 'danger', msg: `Suhu Sangat Dingin: ${t.toFixed(1)}°C (Risiko Hipotermia Ayam)`, time: ts });
+    if (t !== null && t >= dT) {
+      alerts.push({ type: 'danger', msg: `Suhu Udara Bahaya: ${t.toFixed(1)}°C (Risiko Heat Stress Ekstrem ≥ ${dT}°C)`, time: ts });
+    } else if (t !== null && t >= wT) {
+      alerts.push({ type: 'warning', msg: `Suhu Udara Panas: ${t.toFixed(1)}°C (Waspada Panas ≥ ${wT}°C — Kipas Dingin Max)`, time: ts });
+    } else if (t !== null && t <= minC) {
+      alerts.push({ type: 'warning', msg: `Suhu Udara Dingin: ${t.toFixed(1)}°C (Di bawah ${minC}°C — Pemanas ON)`, time: ts });
     }
 
-    if (h !== null && h >= THRESHOLDS.humidity.danger) {
-      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h.toFixed(1)}% (Kandang Terlalu Basah > 90%)`, time: ts });
+    if (h !== null && h >= dH) {
+      alerts.push({ type: 'danger', msg: `Kelembapan sangat tinggi: ${h.toFixed(1)}% (Kandang Basah ≥ ${dH}%)`, time: ts });
     }
 
     if (alerts.length > 0) {
@@ -773,7 +1269,7 @@
       label.textContent = text || (online ? 'Online' : 'Offline');
     }
 
-    if (dbDot && dbText) {
+      if (dbDot && dbText) {
       dbDot.className = dotClass;
       if (isDemo) {
         dbText.textContent = text || 'Database: Mode Demo';
@@ -790,10 +1286,40 @@
       }
     }
 
+    // Sinkronisasi ke Mobile Status Hub
+    const mDbDot = document.getElementById('m-db-status-dot');
+    const mDbText = document.getElementById('m-db-status-text');
+    const mDbSub = document.getElementById('m-db-status-sub');
+    const mQuickLabel = document.getElementById('m-quick-demo-toggle-label');
+
+    if (mDbDot && mDbText) {
+      mDbDot.className = dotClass;
+      if (isDemo) {
+        mDbText.textContent = text || 'Database: Mode Demo';
+        if (mDbSub) mDbSub.textContent = subText || 'Data Simulasi Lokal';
+      } else if (online === null || online === undefined) {
+        mDbText.textContent = text || 'Database: Menghubungkan...';
+        if (mDbSub) mDbSub.textContent = subText || 'Supabase Cloud';
+      } else if (online) {
+        mDbText.textContent = text || 'Database: Terhubung';
+        if (mDbSub) mDbSub.textContent = subText || 'Supabase Cloud (Online)';
+      } else {
+        mDbText.textContent = text || 'Database: Terputus';
+        if (mDbSub) mDbSub.textContent = subText || 'Gagal Konek Supabase';
+      }
+    }
+    const dQuickLabel = document.getElementById('quick-demo-toggle-label');
+    if (mQuickLabel) {
+      mQuickLabel.textContent = (state.connectionMode === 'demo') ? '📡 Sensor Realtime' : '🧪 Buka Demo';
+    }
+    if (dQuickLabel) {
+      dQuickLabel.textContent = (state.connectionMode === 'demo') ? '📡 Sensor Realtime' : '🧪 Buka Mode Demo';
+    }
+
     evaluateEsp32Status();
   }
 
-  // ─── WATCHDOG KONEKSI ESP32 (Sesuai Permintaan: Online jika <= 10 detik) ───
+  // ─── WATCHDOG KONEKSI ESP32 (Sesuai Permintaan: Online jika data baru <= 15 detik) ───
   function evaluateEsp32Status() {
     const dot = document.getElementById('esp32-dot');
     const text = document.getElementById('esp32-text');
@@ -812,10 +1338,17 @@
         chipText.textContent = 'ESP32: Mode Simulasi Aktif';
         chipText.style.color = 'var(--warning)';
       }
+      const mEspDot = document.getElementById('m-esp32-dot');
+      const mEspText = document.getElementById('m-esp32-text');
+      const mEspTime = document.getElementById('m-esp32-time');
+      if (mEspDot) mEspDot.className = 'pulse-dot demo';
+      if (mEspText) mEspText.textContent = 'ESP32: Mode Demo';
+      if (mEspTime) mEspTime.textContent = 'Simulasi Layar';
       return;
     }
 
     if (!state.lastEsp32Heartbeat) {
+      state.isHardwareOnline = false;
       dot.className = 'pulse-dot offline';
       text.textContent = 'ESP32: Belum Terhubung';
       if (timeEl) timeEl.textContent = '(Menunggu alat...)';
@@ -824,40 +1357,70 @@
         chipText.textContent = 'ESP32: Belum Terhubung (Menunggu Data)';
         chipText.style.color = 'var(--danger)';
       }
+      const mEspDot = document.getElementById('m-esp32-dot');
+      const mEspText = document.getElementById('m-esp32-text');
+      const mEspTime = document.getElementById('m-esp32-time');
+      if (mEspDot) mEspDot.className = 'pulse-dot offline';
+      if (mEspText) mEspText.textContent = 'ESP32: Belum Terhubung';
+      if (mEspTime) mEspTime.textContent = 'Menunggu koneksi...';
       return;
     }
 
     // Hitung selisih waktu telemetri terhadap waktu sekarang (dalam detik)
     const diff = Math.max(0, Math.round((Date.now() - state.lastEsp32Heartbeat.getTime()) / 1000));
     const prevOnline = state.isHardwareOnline;
-    state.isHardwareOnline = diff <= 15; // Online jika ada data baru dalam 15 detik terakhir
+    // ESP32 mengirim data tiap 3 detik. Jika data lebih dari 15 detik lalu, ESP32 OFF!
+    state.isHardwareOnline = (diff <= 15);
 
     const timeStr = state.lastEsp32Heartbeat.toLocaleTimeString('id-ID');
 
     if (state.isHardwareOnline) {
+      const liveStr = diff <= 2 ? 'Live' : `${diff}s lalu`;
       dot.className = 'pulse-dot';
       text.textContent = 'ESP32: Terhubung (Online)';
-      if (timeEl) timeEl.textContent = diff <= 2 ? '(Live)' : `(${diff}d lalu)`;
+      if (timeEl) timeEl.textContent = `(${liveStr})`;
       if (chipDot) chipDot.className = 'pulse-dot';
       if (chipText) {
-        chipText.textContent = `ESP32: Terhubung (Online) ${diff <= 2 ? '(Live)' : '(' + diff + 's lalu)'}`;
+        chipText.textContent = `ESP32: Terhubung (Online) (${liveStr})`;
         chipText.style.color = 'var(--success)';
       }
     } else {
+      const agoStr = diff < 60 ? `(${diff}d lalu)` : (diff < 3600 ? `(${Math.round(diff / 60)}m lalu)` : `(Terakhir ${timeStr})`);
       dot.className = 'pulse-dot offline';
       text.textContent = 'ESP32: Terputus (Offline)';
-      if (timeEl) timeEl.textContent = `(Terakhir ${timeStr})`;
+      if (timeEl) timeEl.textContent = agoStr;
       if (chipDot) chipDot.className = 'pulse-dot offline';
       if (chipText) {
         chipText.textContent = `ESP32: Terputus (Offline) (Terakhir ${timeStr})`;
         chipText.style.color = 'var(--danger)';
       }
-    }
 
-    if (!state.isHardwareOnline && state.connectionMode !== 'demo') {
+      // Kosongkan sensor riil dan matikan status aktuator jika ESP32 mati/offline
       state.sensors.suhu = null;
       state.sensors.kelembapan = null;
       state.sensors.amonia = null;
+      state.actuators.pwmIntake = 0;
+      state.actuators.pwmExhaust = 0;
+      state.actuators.pwmPemanas = 0;
+      state.actuators.statusKonveyor = false;
+      state.fuzzy = null;
+    }
+
+    // Sinkronisasi status ESP32 ke Mobile Status Hub
+    const mEspDot = document.getElementById('m-esp32-dot');
+    const mEspText = document.getElementById('m-esp32-text');
+    const mEspTime = document.getElementById('m-esp32-time');
+
+    if (mEspDot && mEspText) {
+      if (state.isHardwareOnline) {
+        mEspDot.className = 'pulse-dot';
+        mEspText.textContent = 'ESP32: Terhubung (Online)';
+        if (mEspTime) mEspTime.textContent = diff <= 2 ? `Live (${timeStr})` : `${diff}s lalu (${timeStr})`;
+      } else {
+        mEspDot.className = 'pulse-dot offline';
+        mEspText.textContent = 'ESP32: Terputus (Offline)';
+        if (mEspTime) mEspTime.textContent = diff < 60 ? `${diff}s lalu (${timeStr})` : `Terakhir: ${timeStr}`;
+      }
     }
 
     if (prevOnline !== state.isHardwareOnline) {
@@ -870,6 +1433,8 @@
   // ════════════════════════════════════════════════════════════════
 
   function getStatusType(val, limits) {
+    if (limits.minCold && val <= limits.minCold) return 'warning';
+    if (limits.minDry && val <= limits.minDry) return 'warning';
     if (val >= limits.danger) return 'danger';
     if (val >= limits.warning) return 'warning';
     return 'normal';
@@ -883,7 +1448,7 @@
     // Header Clock
     const clockEl = document.getElementById('header-clock');
     if (clockEl) {
-      clockEl.textContent = (s.timestamp || new Date()).toLocaleTimeString('id-ID');
+      clockEl.textContent = new Date().toLocaleTimeString('id-ID');
     }
 
     // Condition Badge (Dashboard)
@@ -899,6 +1464,35 @@
         condBadge.className = 'cond-badge';
         condBadge.textContent = 'Menunggu Sensor...';
       }
+    }
+
+    // Panel Demo Visibility & Feedback
+    const demoPanel = document.getElementById('demo-interactive-panel');
+    if (demoPanel) {
+      demoPanel.style.display = (state.connectionMode === 'demo') ? 'block' : 'none';
+    }
+
+    const quickToggleLabel = document.getElementById('quick-demo-toggle-label');
+    if (quickToggleLabel) {
+      quickToggleLabel.textContent = (state.connectionMode === 'demo') ? '📡 Sensor Realtime' : '🧪 Buka Mode Demo (Semhas)';
+    }
+    const mQuickLabel = document.getElementById('m-quick-demo-toggle-label');
+    if (mQuickLabel) {
+      mQuickLabel.textContent = (state.connectionMode === 'demo') ? '📡 Sensor Realtime' : '🧪 Buka Demo';
+    }
+
+    // Subtext Baku Kartu Sensor Dashboard Sesuai Bab III Proposal Skripsi
+    const subTemp = document.querySelector('#val-temp')?.closest('.sensor-card')?.querySelector('.card-subtext');
+    if (subTemp) {
+      subTemp.innerHTML = '<span>Zona Nyaman: 20–25°C</span><span>Batas Kritis: &ge; 31°C</span>';
+    }
+    const subHum = document.querySelector('#val-humid')?.closest('.sensor-card')?.querySelector('.card-subtext');
+    if (subHum) {
+      subHum.innerHTML = '<span>Optimal: 60–80%</span><span>Batas Kritis: &ge; 90%</span>';
+    }
+    const subNh3 = document.querySelector('#val-ammonia')?.closest('.sensor-card')?.querySelector('.card-subtext');
+    if (subNh3) {
+      subNh3.innerHTML = '<span>Batas Aman: &lt; 20 ppm</span><span>Batas Kritis: &ge; 30 ppm</span>';
     }
 
     // ─── 1. Sensor Cards (Suhu, Kelembapan, Gas Amonia) ───
@@ -978,7 +1572,12 @@
     const dutyVal = document.getElementById(`duty-val-${idPrefix}`);
     const dutyFill = document.getElementById(`duty-fill-${idPrefix}`);
 
-    if (card) card.classList.remove('on');
+    if (card) {
+      card.classList.remove('on');
+      card.classList.remove('fan-active');
+      card.classList.remove('heater-active');
+      card.classList.remove('conveyor-active');
+    }
     if (pill) pill.textContent = 'OFF';
     if (dutyVal) dutyVal.textContent = '--%';
     if (dutyFill) dutyFill.style.width = '0%';
@@ -995,7 +1594,13 @@
 
     if (badgeEl) {
       badgeEl.className = `card-badge ${status}`;
-      badgeEl.textContent = status === 'danger' ? 'BAHAYA' : (status === 'warning' ? 'WASPADA' : 'NORMAL');
+      if (limits.minCold && val <= limits.minCold) {
+        badgeEl.textContent = 'DINGIN';
+      } else if (limits.minDry && val <= limits.minDry) {
+        badgeEl.textContent = 'KERING';
+      } else {
+        badgeEl.textContent = status === 'danger' ? 'BAHAYA' : (status === 'warning' ? 'WASPADA' : 'NORMAL');
+      }
     }
 
     if (barEl) {
@@ -1012,8 +1617,23 @@
     const dutyFill = document.getElementById(`duty-fill-${idPrefix}`);
 
     if (card) {
-      if (isOn) card.classList.add('on');
-      else card.classList.remove('on');
+      if (isOn) {
+        card.classList.add('on');
+        if (idPrefix === 'fan-in' || idPrefix === 'fan-out') {
+          card.classList.add('fan-active');
+          const speed = Math.max(0.25, (110 - dutyPct) / 80).toFixed(2);
+          card.style.setProperty('--fan-speed', `${speed}s`);
+        } else if (idPrefix === 'heater') {
+          card.classList.add('heater-active');
+        } else if (idPrefix === 'conveyor') {
+          card.classList.add('conveyor-active');
+        }
+      } else {
+        card.classList.remove('on');
+        card.classList.remove('fan-active');
+        card.classList.remove('heater-active');
+        card.classList.remove('conveyor-active');
+      }
     }
 
     if (pill) {
@@ -1667,6 +2287,11 @@
 
       state.fuzzy = simFuzzy;
       renderRulesTable();
+
+      // Jika dalam mode demo, sinkronkan juga ke dashboard & aktuator
+      if (state.connectionMode === 'demo') {
+        applyDemoValues(t, h, a);
+      }
     }
 
     if (simTemp && simHum && simNh3) {
@@ -1674,6 +2299,192 @@
       simHum.addEventListener('input', onSimSliderChange);
       simNh3.addEventListener('input', onSimSliderChange);
     }
+
+    // ─── PANEL UJI INTERAKTIF SEMINAR HASIL (MODE DEMO) ────────────
+    const btnDemoManual = document.getElementById('btn-demo-manual');
+    const btnDemoAuto = document.getElementById('btn-demo-auto');
+    if (btnDemoManual && btnDemoAuto) {
+      btnDemoManual.addEventListener('click', () => {
+        state.demoSubMode = 'manual';
+        localStorage.setItem('smartfarm_demo_submode', 'manual');
+        btnDemoManual.classList.add('active');
+        btnDemoAuto.classList.remove('active');
+        applyDemoValues(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+      });
+
+      btnDemoAuto.addEventListener('click', () => {
+        state.demoSubMode = 'auto';
+        localStorage.setItem('smartfarm_demo_submode', 'auto');
+        btnDemoAuto.classList.add('active');
+        btnDemoManual.classList.remove('active');
+        // Sesuai permintaan: demo otomatis tidak mengontrol aktuator fisik, kembalikan kontrol ke sensor riil/standby
+        sendHardwareAutoCommand();
+        tickDemoData();
+      });
+
+      if (state.demoSubMode === 'auto') {
+        btnDemoAuto.classList.add('active');
+        btnDemoManual.classList.remove('active');
+      } else {
+        btnDemoManual.classList.add('active');
+        btnDemoAuto.classList.remove('active');
+      }
+    }
+
+    // Tombol Konfigurasi IP WiFi ESP32 (Hotspot HP)
+    const btnWifiIp = document.getElementById('btn-demo-wifi-ip');
+    const wifiIpVal = document.getElementById('demo-wifi-ip-val');
+
+    function updateWifiIpButton() {
+      if (!wifiIpVal) return;
+      const clean = (state.esp32Ip || 'http://smartfarm.local').replace(/^https?:\/\//, '');
+      wifiIpVal.textContent = clean;
+    }
+
+    if (btnWifiIp) {
+      updateWifiIpButton();
+      btnWifiIp.addEventListener('click', () => {
+        const cur = (state.esp32Ip || 'http://smartfarm.local').replace(/^https?:\/\//, '');
+        const input = prompt(
+          "Masukkan Alamat IP ESP32 pada Hotspot HP Anda:\n(Contoh: 192.168.43.45 atau smartfarm.local)",
+          cur
+        );
+        if (input !== null && input.trim() !== '') {
+          let val = input.trim();
+          if (!val.startsWith('http://') && !val.startsWith('https://')) {
+            val = 'http://' + val;
+          }
+          val = val.replace(/\/+$/, '');
+          state.esp32Ip = val;
+          localStorage.setItem('smartfarm_esp32_ip', val);
+          updateWifiIpButton();
+          testEsp32Connection(val);
+
+          if (state.demoSubMode === 'manual') {
+            sendHardwareDemoCommand(state.demoValues.suhu, state.demoValues.kelembapan, state.demoValues.amonia);
+          }
+        }
+      });
+    }
+
+    const btnCollapse = document.getElementById('btn-demo-collapse');
+    const demoBody = document.getElementById('demo-panel-body');
+    if (btnCollapse && demoBody) {
+      btnCollapse.addEventListener('click', () => {
+        demoBody.classList.toggle('collapsed');
+        btnCollapse.textContent = demoBody.classList.contains('collapsed') ? '▲' : '▼';
+      });
+    }
+
+    // Tombol Keluar dari Mode Demo & Quick Toggle Sidebar
+    const btnExitDemo = document.getElementById('btn-exit-demo');
+    if (btnExitDemo) {
+      btnExitDemo.addEventListener('click', () => {
+        switchConnectionMode('supabase');
+      });
+    }
+
+    const btnQuickToggle = document.getElementById('btn-quick-demo-toggle');
+    if (btnQuickToggle) {
+      btnQuickToggle.addEventListener('click', () => {
+        switchConnectionMode(state.connectionMode === 'demo' ? 'supabase' : 'demo');
+      });
+    }
+
+    const btnMQuickToggle = document.getElementById('btn-m-quick-demo-toggle');
+    if (btnMQuickToggle) {
+      btnMQuickToggle.addEventListener('click', () => {
+        switchConnectionMode(state.connectionMode === 'demo' ? 'supabase' : 'demo');
+      });
+    }
+
+    // Input & Slider Interaktif Demo Panel
+    const demoInTemp = document.getElementById('demo-input-temp');
+    const demoSlTemp = document.getElementById('demo-slider-temp');
+    const demoInHum = document.getElementById('demo-input-humid');
+    const demoSlHum = document.getElementById('demo-slider-humid');
+    const demoInNh3 = document.getElementById('demo-input-nh3');
+    const demoSlNh3 = document.getElementById('demo-slider-nh3');
+
+    function onDemoInteractiveChange() {
+      // Beralih ke submode manual saat pengguna mengubah nilai
+      state.demoSubMode = 'manual';
+      localStorage.setItem('smartfarm_demo_submode', 'manual');
+      if (btnDemoManual && btnDemoAuto) {
+        btnDemoManual.classList.add('active');
+        btnDemoAuto.classList.remove('active');
+      }
+
+      const t = parseFloat(demoInTemp?.value || demoSlTemp?.value || 24);
+      const h = parseFloat(demoInHum?.value || demoSlHum?.value || 65);
+      const a = parseFloat(demoInNh3?.value || demoSlNh3?.value || 12);
+      applyDemoValues(t, h, a);
+    }
+
+    if (demoSlTemp) {
+      demoSlTemp.addEventListener('input', (e) => {
+        if (demoInTemp) demoInTemp.value = Number(e.target.value).toFixed(1);
+        onDemoInteractiveChange();
+      });
+    }
+    if (demoInTemp) {
+      demoInTemp.addEventListener('input', (e) => {
+        if (demoSlTemp) demoSlTemp.value = e.target.value;
+        onDemoInteractiveChange();
+      });
+    }
+
+    if (demoSlHum) {
+      demoSlHum.addEventListener('input', (e) => {
+        if (demoInHum) demoInHum.value = Number(e.target.value).toFixed(1);
+        onDemoInteractiveChange();
+      });
+    }
+    if (demoInHum) {
+      demoInHum.addEventListener('input', (e) => {
+        if (demoSlHum) demoSlHum.value = e.target.value;
+        onDemoInteractiveChange();
+      });
+    }
+
+    if (demoSlNh3) {
+      demoSlNh3.addEventListener('input', (e) => {
+        if (demoInNh3) demoInNh3.value = Number(e.target.value).toFixed(1);
+        onDemoInteractiveChange();
+      });
+    }
+    if (demoInNh3) {
+      demoInNh3.addEventListener('input', (e) => {
+        if (demoSlNh3) demoSlNh3.value = e.target.value;
+        onDemoInteractiveChange();
+      });
+    }
+
+    // Tombol Preset Skenario Uji Sidang Semhas
+    document.querySelectorAll('.btn-preset').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.demoSubMode = 'manual';
+        localStorage.setItem('smartfarm_demo_submode', 'manual');
+        if (btnDemoManual && btnDemoAuto) {
+          btnDemoManual.classList.add('active');
+          btnDemoAuto.classList.remove('active');
+        }
+
+        const preset = btn.getAttribute('data-preset');
+        if (preset === 'cold') {
+          applyDemoValues(15.0, 55.0, 6.0);
+        } else if (preset === 'normal') {
+          applyDemoValues(24.0, 65.0, 10.0);
+        } else if (preset === 'hot') {
+          applyDemoValues(35.0, 70.0, 12.0);
+        } else if (preset === 'ammonia') {
+          applyDemoValues(26.0, 75.0, 32.0);
+        } else if (preset === 'danger') {
+          applyDemoValues(37.0, 92.0, 42.0);
+        }
+      });
+    });
+
 
     // Modal Pengaturan Supabase
     const btnSettings = document.getElementById('btn-open-settings');
@@ -1697,24 +2508,17 @@
 
     if (btnSaveSettings && modal) {
       btnSaveSettings.addEventListener('click', () => {
-        state.connectionMode = document.getElementById('input-conn-mode').value;
+        const selectedMode = document.getElementById('input-conn-mode').value;
         state.supabaseUrl = document.getElementById('input-sb-url').value.trim();
         state.supabaseKey = document.getElementById('input-sb-key').value.trim();
         state.esp32Ip = document.getElementById('input-esp32-ip').value.trim();
 
-        localStorage.setItem('smartfarm_conn_mode', state.connectionMode);
         localStorage.setItem('smartfarm_supabase_url', state.supabaseUrl);
         localStorage.setItem('smartfarm_supabase_key', state.supabaseKey);
         localStorage.setItem('smartfarm_esp32_ip', state.esp32Ip);
 
-        if (state.connectionMode === 'demo') {
-          localStorage.setItem('smartfarm_manual_demo', 'true');
-        } else {
-          localStorage.removeItem('smartfarm_manual_demo');
-        }
-
-        restartPolling();
         modal.classList.remove('open');
+        switchConnectionMode(selectedMode);
       });
     }
 
@@ -1862,10 +2666,10 @@
       } else if (!aValid) {
         condText = 'MQ135 Terputus';
         condClass = 'warning';
-      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= 14.0) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= ((THRESHOLDS.temperature.minCold || 18.0) - 4.0)) {
         condText = 'Kritis / Bahaya';
         condClass = 'danger';
-      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= 18.0 || Number(rawH) >= THRESHOLDS.humidity.warning) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= (THRESHOLDS.temperature.minCold || 18.0) || Number(rawH) >= THRESHOLDS.humidity.warning) {
         condText = 'Waspada';
         condClass = 'warning';
       }
@@ -1920,9 +2724,9 @@
         condText = 'SHT31 Terputus';
       } else if (!aValid) {
         condText = 'MQ135 Terputus';
-      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= 14.0) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.danger || Number(rawT) >= THRESHOLDS.temperature.danger || Number(rawT) <= ((THRESHOLDS.temperature.minCold || 18.0) - 4.0)) {
         condText = 'Kritis/Bahaya';
-      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= 18.0 || Number(rawH) >= THRESHOLDS.humidity.warning) {
+      } else if (Number(rawA) >= THRESHOLDS.ammonia.warning || Number(rawT) >= THRESHOLDS.temperature.warning || Number(rawT) <= (THRESHOLDS.temperature.minCold || 18.0) || Number(rawH) >= THRESHOLDS.humidity.warning) {
         condText = 'Waspada';
       }
 
@@ -1977,7 +2781,10 @@
   }
 
   function restartPolling() {
-    if (state.timerId) clearInterval(state.timerId);
+    if (state.timerId) {
+      clearInterval(state.timerId);
+      state.timerId = null;
+    }
 
     if (state.connectionMode === 'supabase') {
       setConnectionStatus(null, 'Database: Menghubungkan...', 'Memeriksa tabel telemetry Supabase...');
@@ -1985,29 +2792,57 @@
         if (!success) {
           console.warn('Inisialisasi Supabase belum berhasil, menunggu koneksi...');
         }
-        // Polling sinkronisasi database berkala setiap 5 detik ke tabel 'telemetry'
-          state.timerId = setInterval(async () => {
-            if (state.connectionMode === 'supabase' && state.supabaseClient) {
-              try {
-                const { data, error } = await state.supabaseClient
-                  .from('telemetry')
-                  .select('*')
-                  .order('created_at', { ascending: false })
-                  .limit(1);
+        // Polling berkala setiap 3 detik ke tabel 'telemetry' Supabase sebagai jaminan data selalu segar
+        state.timerId = setInterval(async () => {
+          if (state.connectionMode === 'supabase' && state.supabaseClient) {
+            try {
+              const { data, error } = await state.supabaseClient
+                .from('telemetry')
+                .select('*')
+                .order('created_at', { ascending: false })
+                .limit(1);
 
-                if (!error && data && data.length > 0) {
-                  const r = data[0];
-                  const rowTime = new Date(r.created_at);
-                  if (!state.sensors.timestamp || rowTime > state.sensors.timestamp) {
-                    updateTelemetryData(r);
-                  }
+              if (!error && data && data.length > 0) {
+                const r = data[0];
+                const rowTime = new Date(r.created_at).getTime();
+                const ageSec = Math.max(0, Math.round((Date.now() - rowTime) / 1000));
+
+                state.lastTelemetryId = r.id;
+                state.lastTelemetryCreatedAt = r.created_at;
+                state.lastEsp32Heartbeat = new Date(r.created_at);
+
+                if (ageSec <= 15) {
+                  // ESP32 aktif & mengirim data baru
+                  const wasOffline = !state.isHardwareOnline || state.sensors.suhu === null;
+                  state.isHardwareOnline = true;
+                  updateTelemetryData(r);
                   setConnectionStatus(true, 'Database: Terhubung', 'Supabase Cloud (Live Data)');
+                  if (wasOffline) {
+                    evaluateEsp32Status();
+                  }
+                } else {
+                  // Data terakhir di database sudah basi (> 15 detik), ESP32 sedang OFF!
+                  const wasOnline = state.isHardwareOnline;
+                  state.isHardwareOnline = false;
+                  state.sensors.suhu = null;
+                  state.sensors.kelembapan = null;
+                  state.sensors.amonia = null;
+                  state.sensors.timestamp = new Date(r.created_at);
+                  state.actuators.pwmIntake = 0;
+                  state.actuators.pwmExhaust = 0;
+                  state.actuators.pwmPemanas = 0;
+                  state.actuators.statusKonveyor = false;
+                  state.fuzzy = null;
+                  evaluateEsp32Status();
+                  renderUI();
+                  setConnectionStatus(true, 'Database: Terhubung', 'ESP32 Sedang Offline');
                 }
-              } catch (e) {
-                console.warn('Sinkronisasi berkala gagal:', e);
               }
+            } catch (e) {
+              console.warn('Sinkronisasi berkala gagal:', e);
             }
-          }, 5000);
+          }
+        }, 3000);
       });
     } else if (state.connectionMode === 'esp32') {
       setConnectionStatus(null, 'ESP32: Menghubungkan...', 'Direct IP');
@@ -2030,6 +2865,12 @@
 
     // Watchdog status koneksi ESP32 tiap 1 detik
     setInterval(evaluateEsp32Status, 1000);
+
+    // Detik jam header setiap 1 detik
+    setInterval(() => {
+      const clockEl = document.getElementById('header-clock');
+      if (clockEl) clockEl.textContent = new Date().toLocaleTimeString('id-ID');
+    }, 1000);
 
     const simTemp = document.getElementById('sim-temp');
     if (simTemp) {
