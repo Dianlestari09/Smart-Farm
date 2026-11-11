@@ -5,7 +5,6 @@
  * "Rancang Bangun Sistem Otomatisasi Mikroklimat Kandang Ayam Petelur
  *  Berbasis Fuzzy Logic Controller"
  * 
- * Sesuai Bab III Proposal Skripsi:
  * 1. Database Supabase Tabel Tunggal: 'telemetry' (Tabel 3.5 Proposal)
  * 2. Algoritma FLC Mamdani 125 Rule Base (5 Suhu x 5 Kelembapan x 5 Amonia)
  * 3. Defuzzifikasi Centroid COA Domain [0..100] & Scaling PWM (Persamaan 3.1 & 3.2)
@@ -25,10 +24,10 @@
   // 3. Gas Amonia: Aman < 20 ppm, Waspada/Konveyor ON >= 20 ppm, Bahaya Kritis >= 30 ppm
   const THRESHOLDS = Object.freeze({
     temperature: { min: 10, max: 40, minCold: 18.0, warning: 27.0, danger: 31.0 },
-    humidity:    { min: 20, max: 100, minDry: 50.0,  warning: 85.0, danger: 92.0 },
-    ammonia:     { min: 0,  max: 50,  warning: 20.0, danger: 30.0 }
+    humidity: { min: 20, max: 100, minDry: 50.0, warning: 85.0, danger: 92.0 },
+    ammonia: { min: 0, max: 50, warning: 20.0, danger: 30.0 }
   });
-  try { localStorage.removeItem('smartfarm_thresholds'); } catch (e) {}
+  try { localStorage.removeItem('smartfarm_thresholds'); } catch (e) { }
 
   // Baca konfigurasi dari config.js atau localStorage
   const savedConfig = window.SMARTFARM_CONFIG || {};
@@ -91,6 +90,8 @@
 
     // Chart settings
     chartRange: '1h',
+    chartCustomStartDate: '',
+    chartCustomEndDate: '',
     hoveredChartPoint: null,
     timerId: null,
 
@@ -394,8 +395,9 @@
   // ════════════════════════════════════════════════════════════════
 
   function generateMockHistoryForRange(range = state.chartRange) {
-    const hours = range === '24h' ? 24 : (range === '6h' ? 6 : 1);
-    const count = range === '24h' ? 48 : (range === '6h' ? 36 : 30);
+    const isCustom = range === 'custom';
+    const hours = (range === 'all' || isCustom) ? 72 : (range === '24h' ? 24 : (range === '6h' ? 6 : 1));
+    const count = (range === 'all' || isCustom) ? 120 : (range === '24h' ? 48 : (range === '6h' ? 36 : 30));
     const stepMs = (hours * 3600 * 1000) / count;
     const now = Date.now();
     const hist = [];
@@ -409,7 +411,13 @@
       let baseHum = 68.0;
       let baseNh3 = 12.0;
 
-      if (range === '24h') {
+      if (range === 'all' || isCustom) {
+        // Siklus multi-hari (simulasi data keseluruhan)
+        const hourOfDay = time.getHours() + time.getMinutes() / 60;
+        baseTemp = 24.5 + Math.sin((hourOfDay - 9) * Math.PI / 12) * 4.5 + Math.sin(hoursAgo * 0.15) * 1.5;
+        baseHum = 67.0 - Math.sin((hourOfDay - 9) * Math.PI / 12) * 8.0 + Math.cos(hoursAgo * 0.12) * 3.0;
+        baseNh3 = 13.0 + Math.cos((hourOfDay - 14) * Math.PI / 12) * 4.0 + Math.sin(hoursAgo * 0.18) * 2.0;
+      } else if (range === '24h') {
         // Siklus diurnal 24 jam (siang lebih panas, malam lebih dingin & lembap)
         const hourOfDay = time.getHours() + time.getMinutes() / 60;
         baseTemp = 24.5 + Math.sin((hourOfDay - 9) * Math.PI / 12) * 4.5;
@@ -458,54 +466,179 @@
     return true;
   }
 
-  async function fetchChartHistory(range = state.chartRange) {
-    const hours = range === '24h' ? 24 : (range === '6h' ? 6 : 1);
-    const cut = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  // Helper konversi baris database telemetry Supabase ke format data grafik
+  function mapTelemetryRow(d) {
+    const rawT = d.suhu !== undefined ? d.suhu : d.temperature;
+    const rawH = d.kelembapan !== undefined ? d.kelembapan : d.humidity;
+    const rawA = d.amonia !== undefined ? d.amonia : d.ammonia;
+
+    const tValid = isSensorValid(rawT, 0, 60);
+    const hValid = isSensorValid(rawH, 0, 100);
+    const aValid = isSensorValid(rawA, 0, 200);
+
+    return {
+      time: new Date(d.created_at),
+      suhu: tValid ? Number(rawT) : null,
+      kelembapan: hValid ? Number(rawH) : null,
+      amonia: aValid ? Number(rawA) : null,
+      pwm_intake: Number(d.pwm_intake || 0),
+      pwm_exhaust: Number(d.pwm_exhaust || 0),
+      pwm_pemanas: Number(d.pwm_pemanas || 0),
+      status_konveyor: Boolean(d.status_konveyor)
+    };
+  }
+
+  // Mengambil SELURUH data telemetry dari Supabase menggunakan pagination (batch 1000 baris)
+  // Menjamin seluruh data (misal 8.000+ baris dari 21 Okt sampai 5 Nov) dimuat penuh tanpa terpotong
+  async function fetchTelemetryPaginated(options = {}) {
+    const { gte, lte, onProgress } = options;
+    const PAGE_SIZE = 1000;
+    let allRows = [];
+    let from = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      let query = state.supabaseClient
+        .from('telemetry')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (gte) query = query.gte('created_at', gte);
+      if (lte) query = query.lte('created_at', lte);
+
+      const to = from + PAGE_SIZE - 1;
+      const { data, error } = await query.range(from, to);
+
+      if (error) {
+        console.warn('Gagal memuat halaman data Supabase, offset:', from, error);
+        break;
+      }
+
+      if (data && data.length > 0) {
+        allRows = allRows.concat(data);
+        if (typeof onProgress === 'function') {
+          onProgress(allRows.length);
+        }
+        if (data.length < PAGE_SIZE) {
+          hasMore = false;
+        } else {
+          from += data.length;
+        }
+      } else {
+        hasMore = false;
+      }
+    }
+
+    return allRows;
+  }
+
+  async function fetchChartHistory(range = state.chartRange, customStart = state.chartCustomStartDate, customEnd = state.chartCustomEndDate) {
+    state.chartRange = range;
+    state.chartCustomStartDate = customStart || '';
+    state.chartCustomEndDate = customEnd || '';
+
+    const isAll = range === 'all';
+    const isCustom = range === 'custom';
+
+    const infoBadge = document.getElementById('chart-data-info-badge');
+    const loadingEl = document.getElementById('chart-loading-indicator');
+    const loadingText = document.getElementById('chart-loading-text');
+
+    if (loadingEl) loadingEl.style.display = 'inline-flex';
+    if (loadingText) loadingText.textContent = 'Memuat data...';
+    if (infoBadge) infoBadge.textContent = 'Memuat...';
+
+    // Perbarui status active di tombol preset
+    const presetBtns = document.querySelectorAll('.chart-btn[data-range]');
+    presetBtns.forEach(b => {
+      if (!isCustom && b.getAttribute('data-range') === range) b.classList.add('active');
+      else b.classList.remove('active');
+    });
 
     if (state.connectionMode === 'supabase' && state.supabaseClient) {
       try {
-        const { data, error } = await state.supabaseClient
-          .from('telemetry')
-          .select('*')
-          .gte('created_at', cut)
-          .order('created_at', { ascending: true })
-          .limit(range === '24h' ? 500 : (range === '6h' ? 300 : 100));
+        let rawData = [];
 
-        if (!error) {
-          // HANYA gunakan data nyata yang tersimpan di tabel telemetry Supabase!
-          state.history = (data || []).map(d => {
-            const rawT = d.suhu !== undefined ? d.suhu : d.temperature;
-            const rawH = d.kelembapan !== undefined ? d.kelembapan : d.humidity;
-            const rawA = d.amonia !== undefined ? d.amonia : d.ammonia;
-
-            const tValid = isSensorValid(rawT, 0, 60);
-            const hValid = isSensorValid(rawH, 0, 100);
-            const aValid = isSensorValid(rawA, 0, 200);
-
-            return {
-              time: new Date(d.created_at),
-              suhu: tValid ? Number(rawT) : null,
-              kelembapan: hValid ? Number(rawH) : null,
-              amonia: aValid ? Number(rawA) : null,
-              pwm_intake: Number(d.pwm_intake || 0),
-              pwm_exhaust: Number(d.pwm_exhaust || 0),
-              pwm_pemanas: Number(d.pwm_pemanas || 0),
-              status_konveyor: Boolean(d.status_konveyor)
-            };
+        if (isAll) {
+          // Mode "Semua Data": ambil SELURUH riwayat dari awal hingga akhir tanpa batasan limit
+          rawData = await fetchTelemetryPaginated({
+            onProgress: count => {
+              if (loadingText) loadingText.textContent = `Memuat ${count.toLocaleString('id-ID')} data...`;
+            }
           });
-          renderCanvasChart();
-          return;
+        } else if (isCustom) {
+          // Mode "Filter Tanggal": ambil data sesuai rentang tanggal (Hari, Bulan, Tahun)
+          let gte = null;
+          let lte = null;
+
+          if (customStart) {
+            gte = `${customStart}T00:00:00.000Z`;
+          }
+          if (customEnd) {
+            lte = `${customEnd}T23:59:59.999Z`;
+          } else if (customStart) {
+            lte = `${customStart}T23:59:59.999Z`;
+          }
+
+          rawData = await fetchTelemetryPaginated({
+            gte,
+            lte,
+            onProgress: count => {
+              if (loadingText) loadingText.textContent = `Memuat ${count.toLocaleString('id-ID')} data...`;
+            }
+          });
+        } else {
+          // Preset Jam (1h, 6h, 24h)
+          const hours = range === '24h' ? 24 : (range === '6h' ? 6 : 1);
+          const cut = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
+          const { data, error } = await state.supabaseClient
+            .from('telemetry')
+            .select('*')
+            .gte('created_at', cut)
+            .order('created_at', { ascending: true })
+            .limit(range === '24h' ? 500 : (range === '6h' ? 300 : 100));
+
+          if (error) throw error;
+          rawData = data || [];
         }
+
+        // Mapping row telemetry ke struktur objek history chart
+        state.history = (rawData || []).map(mapTelemetryRow);
+
+        // Perbarui teks informasi jumlah data
+        if (infoBadge) {
+          const total = state.history.length;
+          if (isAll) {
+            infoBadge.textContent = `📊 Total: ${total.toLocaleString('id-ID')} data (Semua)`;
+          } else if (isCustom) {
+            const sLabel = customStart || '';
+            const eLabel = (customEnd && customEnd !== customStart) ? ` s/d ${customEnd}` : '';
+            infoBadge.textContent = `📅 ${total.toLocaleString('id-ID')} data (${sLabel}${eLabel})`;
+          } else {
+            const rLabel = range === '24h' ? '24 Jam' : (range === '6h' ? '6 Jam' : '1 Jam');
+            infoBadge.textContent = `⏱️ ${total.toLocaleString('id-ID')} data (${rLabel})`;
+          }
+        }
+
+        renderCanvasChart();
+        return;
       } catch (err) {
         console.warn('Gagal memuat histori Supabase untuk rentang', range, err);
+        if (infoBadge) infoBadge.textContent = 'Gagal memuat data';
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
       }
     }
 
     if (state.connectionMode === 'demo') {
       generateMockHistoryForRange(range);
+      if (infoBadge) infoBadge.textContent = `🧪 Mode Demo: ${state.history.length} data`;
     } else {
       state.history = [];
+      if (infoBadge) infoBadge.textContent = '0 data';
     }
+    if (loadingEl) loadingEl.style.display = 'none';
     renderCanvasChart();
   }
 
@@ -781,7 +914,7 @@
         const timeoutId = setTimeout(() => controller.abort(), 1200);
         await fetch(`${baseUrl}/api/auto`, { method: 'GET', signal: controller.signal });
         clearTimeout(timeoutId);
-      } catch (e) {}
+      } catch (e) { }
     });
 
     const hwDot = document.getElementById('hw-conn-dot');
@@ -1196,8 +1329,9 @@
           pwm_pemanas: state.actuators.pwmPemanas,
           status_konveyor: state.actuators.statusKonveyor
         });
-        const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
-        const maxHist = Math.max(60, rangeHours * 15);
+        const isAllOrCustom = state.chartRange === 'all' || state.chartRange === 'custom';
+        const rangeHours = isAllOrCustom ? 720 : (state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1));
+        const maxHist = isAllOrCustom ? 50000 : Math.max(60, rangeHours * 15);
         if (state.history.length > maxHist) state.history.shift();
       }
     }
@@ -1215,11 +1349,11 @@
     const ts = new Date().toLocaleTimeString('id-ID');
 
     const minC = THRESHOLDS.temperature.minCold || 18.0;
-    const wT   = THRESHOLDS.temperature.warning;
-    const dT   = THRESHOLDS.temperature.danger;
-    const wA   = THRESHOLDS.ammonia.warning;
-    const dA   = THRESHOLDS.ammonia.danger;
-    const dH   = THRESHOLDS.humidity.danger;
+    const wT = THRESHOLDS.temperature.warning;
+    const dT = THRESHOLDS.temperature.danger;
+    const wA = THRESHOLDS.ammonia.warning;
+    const dA = THRESHOLDS.ammonia.danger;
+    const dH = THRESHOLDS.humidity.danger;
 
     if (a !== null && a >= dA) {
       alerts.push({ type: 'danger', msg: `Gas Amonia Bahaya: ${a.toFixed(1)} ppm (Batas Kritis ≥ ${dA} ppm — Konveyor ON)`, time: ts });
@@ -1269,7 +1403,7 @@
       label.textContent = text || (online ? 'Online' : 'Offline');
     }
 
-      if (dbDot && dbText) {
+    if (dbDot && dbText) {
       dbDot.className = dotClass;
       if (isDemo) {
         dbText.textContent = text || 'Database: Mode Demo';
@@ -1663,23 +1797,23 @@
     }
     // Suhu (5 himpunan)
     setBarVal('m-temp-sd', mem.temp.SD);
-    setBarVal('m-temp-d',  mem.temp.D);
-    setBarVal('m-temp-n',  mem.temp.N);
-    setBarVal('m-temp-p',  mem.temp.P);
+    setBarVal('m-temp-d', mem.temp.D);
+    setBarVal('m-temp-n', mem.temp.N);
+    setBarVal('m-temp-p', mem.temp.P);
     setBarVal('m-temp-sp', mem.temp.SP);
 
     // Kelembapan (5 himpunan)
     setBarVal('m-hum-sk', mem.humid.SK);
-    setBarVal('m-hum-k',  mem.humid.K);
-    setBarVal('m-hum-n',  mem.humid.N);
-    setBarVal('m-hum-b',  mem.humid.B);
+    setBarVal('m-hum-k', mem.humid.K);
+    setBarVal('m-hum-n', mem.humid.N);
+    setBarVal('m-hum-b', mem.humid.B);
     setBarVal('m-hum-sb', mem.humid.SB);
 
     // Amonia (5 himpunan)
     setBarVal('m-nh3-sr', mem.ammonia.SR);
-    setBarVal('m-nh3-r',  mem.ammonia.R);
-    setBarVal('m-nh3-s',  mem.ammonia.S);
-    setBarVal('m-nh3-t',  mem.ammonia.T);
+    setBarVal('m-nh3-r', mem.ammonia.R);
+    setBarVal('m-nh3-s', mem.ammonia.S);
+    setBarVal('m-nh3-t', mem.ammonia.T);
     setBarVal('m-nh3-st', mem.ammonia.ST);
   }
 
@@ -1741,7 +1875,7 @@
             <td><span class="rule-id-badge" style="${badgeStyle}">R${String(r.id).padStart(3, '0')}</span></td>
             <td style="font-family:var(--font-mono);font-size:12px;">${r.antecedent}</td>
             <td style="font-family:var(--font-mono);font-size:11px;">${r.consequent}</td>
-            <td style="font-family:var(--font-mono);font-weight:${isActive?'700':'400'};color:${isActive?'var(--primary)':'var(--text-muted)'};text-align:right;">
+            <td style="font-family:var(--font-mono);font-weight:${isActive ? '700' : '400'};color:${isActive ? 'var(--primary)' : 'var(--text-muted)'};text-align:right;">
               ${isActive ? `&alpha; = ${activeAlpha.toFixed(2)}` : '0.00'}
             </td>
           </tr>
@@ -1816,8 +1950,17 @@
       ctx.fillStyle = '#64748B';
       ctx.font = '600 13px Inter, sans-serif';
       ctx.textAlign = 'center';
-      const rangeLabel = state.chartRange === '24h' ? '24 Jam' : (state.chartRange === '6h' ? '6 Jam' : '1 Jam');
-      ctx.fillText(`Tidak ada data sensor di database dalam rentang ${rangeLabel} terakhir.`, w / 2, h / 2 - 14);
+      const isCustom = state.chartRange === 'custom';
+      let rangeLabel = '1 Jam';
+      if (state.chartRange === 'all') rangeLabel = 'Semua Data';
+      else if (isCustom) {
+        const sL = state.chartCustomStartDate;
+        const eL = (state.chartCustomEndDate && state.chartCustomEndDate !== sL) ? ` s/d ${state.chartCustomEndDate}` : '';
+        rangeLabel = `filter tanggal (${sL}${eL})`;
+      } else if (state.chartRange === '24h') rangeLabel = '24 Jam';
+      else if (state.chartRange === '6h') rangeLabel = '6 Jam';
+
+      ctx.fillText(`Tidak ada data sensor di database dalam rentang ${rangeLabel}${state.chartRange === 'all' || isCustom ? '' : ' terakhir'}.`, w / 2, h / 2 - 14);
       ctx.fillStyle = '#94A3B8';
       ctx.font = '12px Inter, sans-serif';
       if (state.lastEsp32Heartbeat) {
@@ -1828,7 +1971,7 @@
       }
       ctx.fillStyle = '#FF6B00';
       ctx.font = '500 11px Inter, sans-serif';
-      ctx.fillText('💡 Klik tombol "6 Jam" atau "24 Jam" di atas untuk melihat riwayat data dari database', w / 2, h / 2 + 34);
+      ctx.fillText('💡 Klik tombol "6 Jam", "24 Jam", "Semua Data", atau gunakan Filter Tanggal untuk melihat riwayat', w / 2, h / 2 + 34);
       return;
     }
 
@@ -1850,16 +1993,42 @@
       ctx.fillText(step.toString(), padLeft - 8, y + 3);
     }
 
-    // 2. Skala Sumbu X & Garis Grid Vertikal Sesuai Rentang Jam (1 Jam / 6 Jam / 24 Jam)
-    const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
-    const nowTime = Date.now();
-    const durationMs = rangeHours * 3600 * 1000;
-    const startTime = nowTime - durationMs;
+    // 2. Skala Sumbu X & Garis Grid Vertikal Sesuai Rentang (1 Jam / 6 Jam / 24 Jam / Semua Data / Filter Tanggal)
+    const isAllRange = state.chartRange === 'all' || state.chartRange === 'custom';
+    let rangeHours, nowTime, durationMs, startTime;
 
-    // Tentukan interval pembagian jam
+    if (isAllRange && data.length > 0) {
+      // Cari waktu awal dan akhir dari data secara akurat tanpa stack overflow
+      let firstTime = Infinity;
+      let lastTime = -Infinity;
+      for (let i = 0; i < data.length; i++) {
+        const t = data[i].time instanceof Date ? data[i].time.getTime() : new Date(data[i].time).getTime();
+        if (!isNaN(t)) {
+          if (t < firstTime) firstTime = t;
+          if (t > lastTime) lastTime = t;
+        }
+      }
+      if (firstTime === Infinity || lastTime === -Infinity) {
+        firstTime = Date.now() - 3600000;
+        lastTime = Date.now();
+      }
+      durationMs = Math.max(lastTime - firstTime, 60000); // minimal 1 menit
+      startTime = firstTime;
+      nowTime = lastTime;
+      rangeHours = durationMs / (3600 * 1000);
+    } else {
+      rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
+      nowTime = Date.now();
+      durationMs = rangeHours * 3600 * 1000;
+      startTime = nowTime - durationMs;
+    }
+
+    // Tentukan interval pembagian jam / hari
     let tickCount = 4; // 1 Jam: tiap 15 menit
-    if (rangeHours === 6) tickCount = 6; // 6 Jam: tiap 1 jam
-    if (rangeHours === 24) tickCount = 6; // 24 Jam: tiap 4 jam
+    if (rangeHours <= 1.5) tickCount = 4;
+    else if (rangeHours <= 6.5) tickCount = 6;
+    else if (rangeHours <= 26) tickCount = 6;
+    else tickCount = 6; // Rentang multi-hari: 6 grid vertikal
 
     for (let k = 0; k <= tickCount; k++) {
       const ratio = k / tickCount;
@@ -1876,16 +2045,21 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Label jam di bawah sumbu X
+      // Label jam & tanggal di bawah sumbu X
       ctx.fillStyle = '#8C90A0';
       ctx.font = '10px JetBrains Mono, monospace';
       ctx.textAlign = k === 0 ? 'left' : (k === tickCount ? 'right' : 'center');
 
       const timeStr = tTick.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
       let label = timeStr;
-      if (rangeHours === 24) {
+      if (rangeHours >= 24) {
         const dateStr = tTick.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
-        label = k === 0 || k === tickCount ? `${dateStr} ${timeStr}` : timeStr;
+        // Jika rentang lebih dari 3 hari, tampilkan tanggal agar rapi dan tidak padat
+        if (rangeHours > 72) {
+          label = dateStr;
+        } else {
+          label = `${dateStr} ${timeStr}`;
+        }
       }
       ctx.fillText(label, x, padTop + chartH + 18);
     }
@@ -1942,8 +2116,8 @@
     }
 
     drawSeries('kelembapan', '#0284C7', 'rgba(2, 132, 199, 0.05)');
-    drawSeries('suhu',       '#FF6B00', 'rgba(255, 107, 0, 0.08)');
-    drawSeries('amonia',     '#10B981', 'rgba(16, 185, 129, 0.08)');
+    drawSeries('suhu', '#FF6B00', 'rgba(255, 107, 0, 0.08)');
+    drawSeries('amonia', '#10B981', 'rgba(16, 185, 129, 0.08)');
 
     // 4. Garis Vertikal & Titik Saat Kursor Mengarah ke Grafik (Hover)
     if (state.hoveredChartPoint) {
@@ -1964,8 +2138,8 @@
       // Titik lingkaran pada masing-masing kurva
       const seriesData = [
         { val: hPt.kelembapan, color: '#0284C7' },
-        { val: hPt.suhu,       color: '#FF6B00' },
-        { val: hPt.amonia,     color: '#10B981' }
+        { val: hPt.suhu, color: '#FF6B00' },
+        { val: hPt.amonia, color: '#10B981' }
       ];
 
       seriesData.forEach(s => {
@@ -2014,8 +2188,8 @@
     const t = item.time instanceof Date ? item.time : new Date(item.time);
     const timeExact = t.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' WIB';
     let titleStr = timeExact;
-    if (state.chartRange === '24h') {
-      const dateStr = t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+    if (state.chartRange === '24h' || state.chartRange === 'all' || state.chartRange === 'custom') {
+      const dateStr = t.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
       titleStr = `${dateStr} • ${timeExact}`;
     }
 
@@ -2094,10 +2268,33 @@
       return;
     }
 
-    const rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
-    const nowTime = Date.now();
-    const durationMs = rangeHours * 3600 * 1000;
-    const startTime = nowTime - durationMs;
+    const isAllRange = state.chartRange === 'all' || state.chartRange === 'custom';
+    let rangeHours, nowTime, durationMs, startTime;
+
+    if (isAllRange && state.history.length > 0) {
+      let firstTime = Infinity;
+      let lastTime = -Infinity;
+      for (let i = 0; i < state.history.length; i++) {
+        const t = state.history[i].time instanceof Date ? state.history[i].time.getTime() : new Date(state.history[i].time).getTime();
+        if (!isNaN(t)) {
+          if (t < firstTime) firstTime = t;
+          if (t > lastTime) lastTime = t;
+        }
+      }
+      if (firstTime === Infinity || lastTime === -Infinity) {
+        firstTime = Date.now() - 3600000;
+        lastTime = Date.now();
+      }
+      durationMs = Math.max(lastTime - firstTime, 60000);
+      startTime = firstTime;
+      nowTime = lastTime;
+      rangeHours = durationMs / (3600 * 1000);
+    } else {
+      rangeHours = state.chartRange === '24h' ? 24 : (state.chartRange === '6h' ? 6 : 1);
+      nowTime = Date.now();
+      durationMs = rangeHours * 3600 * 1000;
+      startTime = nowTime - durationMs;
+    }
 
     const ratio = Math.max(0, Math.min(1, (clientX - padLeft) / chartW));
     const targetTime = startTime + ratio * durationMs;
@@ -2172,17 +2369,91 @@
       chartContainer.addEventListener('touchend', handleChartPointerLeave);
     }
 
-    // Tombol Filter Rentang Grafik
+    // Tombol Filter Rentang Grafik (Preset 1 Jam, 6 Jam, 24 Jam, Semua Data)
     const chartBtns = document.querySelectorAll('.chart-btn[data-range]');
     chartBtns.forEach(b => {
       b.addEventListener('click', async () => {
         chartBtns.forEach(x => x.classList.remove('active'));
         b.classList.add('active');
         state.chartRange = b.getAttribute('data-range');
+        state.chartCustomStartDate = '';
+        state.chartCustomEndDate = '';
+
+        // Bersihkan input tanggal saat user memilih preset
+        const inS = document.getElementById('chart-date-start');
+        const inE = document.getElementById('chart-date-end');
+        if (inS) inS.value = '';
+        if (inE) inE.value = '';
+
         state.hoveredChartPoint = null;
         updateChartTooltip(null);
         await fetchChartHistory(state.chartRange);
       });
+    });
+
+    // Kontrol Filter Tanggal Spesifik Grafik (Set Tanggal, Bulan, Tahun)
+    const btnApplyChartDate = document.getElementById('btn-apply-chart-date');
+    const btnResetChartDate = document.getElementById('btn-reset-chart-date');
+    const inputChartStart = document.getElementById('chart-date-start');
+    const inputChartEnd = document.getElementById('chart-date-end');
+
+    if (btnApplyChartDate) {
+      btnApplyChartDate.addEventListener('click', async () => {
+        let s = inputChartStart ? inputChartStart.value.trim() : '';
+        let e = inputChartEnd ? inputChartEnd.value.trim() : '';
+
+        if (!s && !e) {
+          alert('Silakan tentukan tanggal mulai atau tanggal selesai terlebih dahulu.');
+          return;
+        }
+
+        if (s && !e) e = s;
+        if (!s && e) s = e;
+        if (s > e) {
+          const temp = s;
+          s = e;
+          e = temp;
+          if (inputChartStart) inputChartStart.value = s;
+          if (inputChartEnd) inputChartEnd.value = e;
+        }
+
+        // Hapus class active dari tombol preset
+        chartBtns.forEach(x => x.classList.remove('active'));
+
+        state.hoveredChartPoint = null;
+        updateChartTooltip(null);
+        await fetchChartHistory('custom', s, e);
+      });
+    }
+
+    if (btnResetChartDate) {
+      btnResetChartDate.addEventListener('click', async () => {
+        if (inputChartStart) inputChartStart.value = '';
+        if (inputChartEnd) inputChartEnd.value = '';
+        state.chartCustomStartDate = '';
+        state.chartCustomEndDate = '';
+
+        // Default kembali ke "all" (Semua Data)
+        const allBtn = document.querySelector('.chart-btn[data-range="all"]');
+        chartBtns.forEach(x => x.classList.remove('active'));
+        if (allBtn) allBtn.classList.add('active');
+
+        state.hoveredChartPoint = null;
+        updateChartTooltip(null);
+        await fetchChartHistory('all');
+      });
+    }
+
+    // Dukungan tekan tombol Enter pada input tanggal
+    [inputChartStart, inputChartEnd].forEach(inp => {
+      if (inp) {
+        inp.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            btnApplyChartDate?.click();
+          }
+        });
+      }
     });
 
     // Tombol Tab Aturan Mamdani (Aktif vs Semua 125 Aturan)
@@ -2277,7 +2548,7 @@
             <div>🌀 <strong>Intake:</strong> y*=${simFuzzy.centroid.fanIntake} &rarr; <strong>${simFuzzy.crisp.fanIntake}% PWM</strong></div>
             <div>💨 <strong>Exhaust:</strong> y*=${simFuzzy.centroid.fanExhaust} &rarr; <strong>${simFuzzy.crisp.fanExhaust}% PWM</strong></div>
             <div>🔥 <strong>Pemanas:</strong> y*=${simFuzzy.centroid.heater} &rarr; <strong>${simFuzzy.crisp.heater}% PWM</strong></div>
-            <div>⚙️ <strong>Konveyor:</strong> <strong style="color:${simFuzzy.states.conveyor?'var(--success)':'var(--text-muted)'};">${simFuzzy.states.conveyor ? 'ON (AKTIF)' : 'OFF (MATI)'}</strong></div>
+            <div>⚙️ <strong>Konveyor:</strong> <strong style="color:${simFuzzy.states.conveyor ? 'var(--success)' : 'var(--text-muted)'};">${simFuzzy.states.conveyor ? 'ON (AKTIF)' : 'OFF (MATI)'}</strong></div>
           </div>
           <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">
             *Defuzzifikasi Centroid COA domain [0..100] &amp; Scaling PWM Persamaan 3.2: y_pwm = ((y* - 8.3) / 83.4) &times; 100.
@@ -2538,8 +2809,8 @@
             list.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:12px;">Tidak ada pemberitahuan baru</div>';
           } else {
             list.innerHTML = state.notifications.map(n => `
-              <div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;background:${n.type==='danger'?'rgba(220,38,38,0.06)':'rgba(217,119,6,0.06)'};">
-                <div style="display:flex;justify-content:space-between;font-weight:700;color:${n.type==='danger'?'var(--danger)':'var(--warning)'};margin-bottom:2px;">
+              <div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;background:${n.type === 'danger' ? 'rgba(220,38,38,0.06)' : 'rgba(217,119,6,0.06)'};">
+                <div style="display:flex;justify-content:space-between;font-weight:700;color:${n.type === 'danger' ? 'var(--danger)' : 'var(--warning)'};margin-bottom:2px;">
                   <span>${n.type === 'danger' ? '🚨 BAHAYA' : '⚠ PERINGATAN'}</span>
                   <span style="font-size:10px;font-family:var(--font-mono);color:var(--text-muted);">${n.time}</span>
                 </div>
@@ -2636,7 +2907,7 @@
     tbody.innerHTML = logs.map((item, index) => {
       const dt = new Date(item.created_at);
       const timeStr = dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) + ' ' +
-                      dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
       const rawT = item.suhu !== undefined ? item.suhu : item.temperature;
       const rawH = item.kelembapan !== undefined ? item.kelembapan : item.humidity;
@@ -2684,7 +2955,7 @@
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmIn}%</td>
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmEx}%</td>
           <td style="font-family:var(--font-mono);font-weight:600;">${pwmHt}%</td>
-          <td><span class="actuator-binary-badge ${cnv?'on':''}">${cnv ? 'ON' : 'OFF'}</span></td>
+          <td><span class="actuator-binary-badge ${cnv ? 'on' : ''}">${cnv ? 'ON' : 'OFF'}</span></td>
           <td><span class="badge-condition ${condClass}">${condText}</span></td>
         </tr>
       `;
@@ -2762,7 +3033,7 @@
     });
 
     if (viewName === 'history') {
-      fetchChartHistory(state.chartRange);
+      fetchChartHistory(state.chartRange, state.chartCustomStartDate, state.chartCustomEndDate);
     } else {
       state.hoveredChartPoint = null;
       updateChartTooltip(null);

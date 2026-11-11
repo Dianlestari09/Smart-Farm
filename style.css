@@ -1088,6 +1088,79 @@ input[type="range"]::-webkit-slider-thumb:hover {
   box-shadow: var(--shadow-sm);
 }
 
+/* ─── Toolbar Filter Tanggal Grafik (Set Hari, Bulan, Tahun) ─── */
+.chart-filter-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-card-subtle);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.chart-filter-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chart-filter-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chart-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chart-date-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.chart-date-group input[type="date"] {
+  padding: 5px 9px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-main);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.chart-date-group input[type="date"]:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow-sm);
+}
+
+.chart-data-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  font-weight: 700;
+}
+
 .canvas-container {
   position: relative;
   height: 340px;
@@ -1621,6 +1694,28 @@ input[type="range"]::-webkit-slider-thumb:hover {
   body {
     padding-bottom: 70px;
   }
+
+  /* Responsive Toolbar Filter Tanggal Grafik di Mobile */
+  .chart-filter-toolbar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+    padding: 10px 12px !important;
+  }
+
+  .chart-filter-left {
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    align-items: center !important;
+  }
+
+  .chart-filter-right {
+    justify-content: space-between !important;
+    width: 100% !important;
+    border-top: 1px dashed var(--border) !important;
+    padding-top: 8px !important;
+  }
 }
 
 @media (min-width: 901px) {
@@ -1655,6 +1750,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
   }
 
   #view-history .chart-header-row {
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+
+  #view-history .chart-filter-toolbar {
     margin-bottom: 12px;
     flex-shrink: 0;
   }

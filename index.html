@@ -16,7 +16,7 @@
     rel="stylesheet">
 
   <!-- Stylesheet Native -->
-  <link rel="stylesheet" href="style.css?v=5.5">
+  <link rel="stylesheet" href="style.css?v=5.6">
 
   <!-- Supabase Official JS SDK CDN (Mendukung Realtime WebSocket) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -861,6 +861,40 @@
               <button class="chart-btn active" data-range="1h">1 Jam</button>
               <button class="chart-btn" data-range="6h">6 Jam</button>
               <button class="chart-btn" data-range="24h">24 Jam</button>
+              <button class="chart-btn" data-range="all">📊 Semua Data</button>
+            </div>
+          </div>
+
+          <!-- Bar Filter Tanggal (Set Tanggal, Bulan, Tahun) & Status Data Grafik -->
+          <div class="chart-filter-toolbar">
+            <div class="chart-filter-left">
+              <span class="chart-filter-label">
+                <span>🗓️</span> <span>Filter Tanggal:</span>
+              </span>
+              <div class="chart-date-group">
+                <label for="chart-date-start">Dari:</label>
+                <input type="date" id="chart-date-start" title="Pilih tanggal mulai (Hari/Bulan/Tahun)">
+              </div>
+              <div class="chart-date-group">
+                <label for="chart-date-end">Sampai:</label>
+                <input type="date" id="chart-date-end" title="Pilih tanggal selesai (Hari/Bulan/Tahun)">
+              </div>
+              <button type="button" class="btn-primary" id="btn-apply-chart-date" style="width:auto;padding:6px 14px;font-size:11px;font-weight:700;">
+                🔍 Tampilkan
+              </button>
+              <button type="button" class="chart-btn" id="btn-reset-chart-date" style="border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);padding:6px 12px;font-size:11px;font-weight:600;" title="Reset filter tanggal">
+                ↺ Reset
+              </button>
+            </div>
+
+            <div class="chart-filter-right">
+              <span id="chart-loading-indicator" style="display:none;font-size:11px;color:var(--primary);font-weight:700;">
+                <span class="pulse-dot demo" style="width:7px;height:7px;display:inline-block;margin-right:4px;"></span>
+                <span id="chart-loading-text">Memuat data...</span>
+              </span>
+              <span id="chart-data-info-badge" class="chart-data-badge">
+                -- data
+              </span>
             </div>
           </div>
 
